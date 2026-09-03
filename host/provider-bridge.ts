@@ -277,12 +277,36 @@ async function handle(request: RecordValue) {
       // message and resending): truncate the OpenCode session in place via
       // revert so files are restored and the session ID is preserved. A fork
       // for a *new* BB thread copies history into a child session instead.
-      const isRewind =
+      const sameThreadRewind =
         !!existing &&
         existing.providerThreadId === params.sourceProviderThreadId &&
         !!checkpointId;
-      if (isRewind && checkpointId) {
-        if (existing.active) {
+      let statelessRewindUsage: SessionState["usage"] | undefined;
+      let statelessRewind = false;
+      if (!sameThreadRewind && !existing && checkpointId) {
+        // No live session: this worker restarted, or another worker owns the
+        // thread. A persisted same-thread mapping still identifies an
+        // in-place rewind. Without one (a genuinely new BB thread, or a
+        // source session held under another BB thread) fall through to fork
+        // so a copy is made instead of truncating history that isn't ours.
+        const sourceInMemory = sessionsByProviderId.get(
+          params.sourceProviderThreadId,
+        );
+        if (!sourceInMemory) {
+          const persisted = await openCodeServer
+            .lookupSessionRegistration(params.threadId)
+            .catch(() => undefined);
+          if (
+            persisted &&
+            persisted.providerThreadId === params.sourceProviderThreadId
+          ) {
+            statelessRewind = true;
+            statelessRewindUsage = { ...persisted.usage };
+          }
+        }
+      }
+      if ((sameThreadRewind || statelessRewind) && checkpointId) {
+        if (existing?.active) {
           await openCodeServer
             .request(
               `/api/session/${encodeURIComponent(existing.providerThreadId)}/interrupt`,
@@ -301,16 +325,23 @@ async function handle(request: RecordValue) {
           params.sourceProviderThreadId,
           modelSettings,
         );
-        rewound.usage = existing.usage;
+        rewound.usage =
+          existing?.usage ?? statelessRewindUsage ?? rewound.usage;
         try {
           rewound.nativeSkillNames = await openCodeServer.nativeSkillNames(
             params.cwd,
           );
           await registerSession(rewound);
-          if (rewound.model && !sameModelRef(existing.model, rewound.model)) {
+          if (existing) {
+            if (rewound.model && !sameModelRef(existing.model, rewound.model)) {
+              await ensureSessionModel(rewound, rewound.model, true);
+            } else {
+              rewound.model = existing.model ?? rewound.model;
+            }
+          } else if (rewound.model) {
+            // Stateless rewind (no live session to compare against): converge
+            // on BB's current selection like thread/resume does.
             await ensureSessionModel(rewound, rewound.model, true);
-          } else {
-            rewound.model = existing.model ?? rewound.model;
           }
         } catch (error) {
           await unregisterSession(rewound, "OpenCode rewind setup failed");
@@ -407,12 +438,18 @@ async function handle(request: RecordValue) {
         return;
       }
       emit(session.bbThreadId, [
+        // Order matters: BB records turn/input/accepted only against an
+        // already-started turn. Emitting input.accepted first (both carry the
+        // same providerTurnId) makes the assembler scope the accepted event to
+        // a turn BB hasn't started yet, so it is dropped, the turn keeps zero
+        // accepted inputs, and BB hides Edit message / rejects edit-message
+        // with "not accepted into exactly one turn".
+        { kind: "turn.open", providerTurnId: active.providerTurnId },
         {
           kind: "input.accepted",
           clientRequestId: params.clientRequestId,
           providerTurnId: active.providerTurnId,
         },
-        { kind: "turn.open", providerTurnId: active.providerTurnId },
       ]);
       sendResult(request.id, { threadId: params.threadId });
       // The beta prompt schema does not accept per-prompt `system` or `tools`.
@@ -448,8 +485,14 @@ async function handle(request: RecordValue) {
           const id = stringValue(result?.data?.id);
           if (id && session.active === active) active.checkpointId = id;
         } catch (error) {
-          if (session.active === active)
+          if (session.active === active) {
+            // The optimistic prompt ID was never created in OpenCode, so it
+            // must not leak into a failed turn boundary as a checkpoint.
+            // Otherwise a later edit/rewind would fail with "checkpoint not
+            // found" for an ID OpenCode never stored.
+            active.checkpointId = undefined;
             openCodeServer.finish(session, "failed", errorMessage(error));
+          }
         }
       })();
       return;
@@ -579,6 +622,11 @@ async function handle(request: RecordValue) {
       if (session) sessionsByProviderId.delete(session.providerThreadId);
       else if (typeof params.providerThreadId === "string")
         sessionsByProviderId.delete(params.providerThreadId);
+      // Drop the persisted mapping so a later thread/fork for this BB thread
+      // ID cannot mistake a new session for an in-place rewind target.
+      await openCodeServer
+        .forgetSessionRegistration(params.threadId)
+        .catch(() => {});
       sendResult(request.id, { ok: true });
       return;
     }

@@ -207,8 +207,10 @@ export function manualCompactionStartDeltas(
 ): RecordValue[] {
   const item = { type: "compaction" };
   return [
-    { kind: "input.accepted", clientRequestId, providerTurnId },
     { kind: "turn.open", providerTurnId },
+    // turn.open first: see turn/start, BB drops input.accepted for turns it
+    // hasn't started yet.
+    { kind: "input.accepted", clientRequestId, providerTurnId },
     {
       kind: "item.open",
       key: itemKey(messageId, "compaction"),

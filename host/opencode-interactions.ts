@@ -99,9 +99,12 @@ export class OpenCodeInteractions {
 
   private async questionForm(
     session: SessionState,
+    active: ActiveTurn,
     callId: string,
   ): Promise<RecordValue | undefined> {
-    for (let attempt = 0; attempt < 30; attempt++) {
+    for (let attempt = 0; attempt < 150; attempt++) {
+      if (session.active !== active || !active.opened.has(callId))
+        return undefined;
       const result = await this.request(
         `/api/session/${encodeURIComponent(session.providerThreadId)}/form`,
       ).catch(() => undefined);
@@ -160,7 +163,7 @@ export class OpenCodeInteractions {
     active: ActiveTurn,
     callId: string,
   ) {
-    const form = await this.questionForm(session, callId);
+    const form = await this.questionForm(session, active, callId);
     if (session.active !== active || !active.opened.has(callId)) return;
     if (!form) {
       this.closeQuestion(
@@ -199,6 +202,7 @@ export class OpenCodeInteractions {
     }
     const questions = fields.map((field) => {
       const key = String(field.key ?? field.title ?? "q");
+      const fieldType = stringValue(field.type);
       const options = Array.isArray(field.options)
         ? field.options.slice(0, 4).map((value: unknown) => {
             const option = inputRecord(value);
@@ -220,7 +224,7 @@ export class OpenCodeInteractions {
         ...(stringValue(field.title)
           ? { shortLabel: stringValue(field.title) }
           : {}),
-        multiSelect: false,
+        multiSelect: fieldType === "multiselect",
         allowFreeText: field.custom !== false,
         ...(options?.length ? { options } : {}),
       };
@@ -259,11 +263,73 @@ export class OpenCodeInteractions {
     const summary: string[] = [];
     for (const field of fields) {
       const key = String(field.key ?? field.title ?? "q");
+      const fieldType = stringValue(field.type);
       const entry: RecordValue = answers[key] ?? {};
       const selected: unknown[] = Array.isArray(entry.selected)
         ? entry.selected
         : [];
       const freeText = stringValue(entry.freeText);
+      if (fieldType === "multiselect") {
+        const values = [
+          ...(freeText ? [freeText] : []),
+          ...selected.map(String).filter((value) => value.length > 0),
+        ];
+        if (!values.length) {
+          await this.cancelQuestionForm(session, formId);
+          this.closeQuestion(
+            session,
+            active,
+            callId,
+            "failed",
+            "Question dismissed",
+          );
+          return;
+        }
+        answer[key] = values;
+        summary.push(values.join(", "));
+        continue;
+      }
+      if (fieldType === "boolean") {
+        const raw = (freeText ?? (selected.length ? String(selected[0]) : ""))
+          .trim()
+          .toLowerCase();
+        if (!raw) {
+          await this.cancelQuestionForm(session, formId);
+          this.closeQuestion(
+            session,
+            active,
+            callId,
+            "failed",
+            "Question dismissed",
+          );
+          return;
+        }
+        const value =
+          raw === "true" || raw === "yes" || raw === "y" || raw === "1";
+        answer[key] = value;
+        summary.push(String(value));
+        continue;
+      }
+      if (fieldType === "number" || fieldType === "integer") {
+        const raw = (
+          freeText ?? (selected.length ? String(selected[0]) : "")
+        ).trim();
+        if (!raw) {
+          await this.cancelQuestionForm(session, formId);
+          this.closeQuestion(
+            session,
+            active,
+            callId,
+            "failed",
+            "Question dismissed",
+          );
+          return;
+        }
+        const numeric = Number(raw);
+        answer[key] = Number.isFinite(numeric) ? numeric : raw;
+        summary.push(raw);
+        continue;
+      }
       const value = freeText ?? (selected.length ? String(selected[0]) : "");
       if (!value) {
         await this.cancelQuestionForm(session, formId);

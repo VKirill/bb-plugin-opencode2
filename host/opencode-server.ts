@@ -28,8 +28,26 @@ type RecordValue = OpenCodeRecord;
 
 const SETTINGS_FILE = "opencode2-model-settings.json";
 const MCP_REGISTRY_FILE = "opencode2-mcp-registry.json";
+const SESSION_REGISTRY_FILE = "opencode2-session-registry.json";
 
 export type McpBridgeRegistration = { serverName: string; cwd: string };
+
+// Persisted so an in-place rewind (BB reuses the same BB thread ID) still
+// works when the host worker holding the live session is gone: after a worker
+// restart, or when another worker owns the thread, thread/fork carries no
+// in-memory session and would otherwise fall through to the fork path and
+// copy the session instead of truncating it.
+export type SessionBridgeRegistration = {
+  providerThreadId: string;
+  cwd: string;
+  usage: {
+    input: number;
+    output: number;
+    reasoning: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
+};
 
 export function parseOpenCodeServiceUrl(output: string): string {
   const token = output.trim().split(/\s+/)[0];
@@ -197,6 +215,111 @@ export class OpenCodeServer {
     await writeJsonFileAtomic(path, Object.fromEntries(this.mcpRegistry));
   }
 
+  private sessionRegistry = new Map<string, SessionBridgeRegistration>();
+  private sessionRegistryLoaded = false;
+  private sessionRegistryOperation: Promise<void> = Promise.resolve();
+
+  private sessionRegistryPath() {
+    return this.dataDir ? join(this.dataDir, SESSION_REGISTRY_FILE) : undefined;
+  }
+
+  private async withSessionRegistryLock<T>(operation: () => Promise<T>) {
+    const result = this.sessionRegistryOperation.then(operation, operation);
+    this.sessionRegistryOperation = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async loadSessionRegistry() {
+    if (this.sessionRegistryLoaded) return;
+    this.sessionRegistryLoaded = true;
+    const path = this.sessionRegistryPath();
+    if (!path) return;
+    try {
+      const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [key, value] of Object.entries(
+          parsed as Record<string, unknown>,
+        )) {
+          const record = value as Record<string, unknown> | null;
+          const usage = (record?.usage ?? {}) as Record<string, unknown>;
+          const usageNumber = (entry: unknown) =>
+            typeof entry === "number" && Number.isFinite(entry) && entry >= 0
+              ? entry
+              : 0;
+          if (
+            record &&
+            typeof record.providerThreadId === "string" &&
+            typeof record.cwd === "string"
+          ) {
+            this.sessionRegistry.set(key, {
+              providerThreadId: record.providerThreadId,
+              cwd: record.cwd,
+              usage: {
+                input: usageNumber(usage.input),
+                output: usageNumber(usage.output),
+                reasoning: usageNumber(usage.reasoning),
+                cacheRead: usageNumber(usage.cacheRead),
+                cacheWrite: usageNumber(usage.cacheWrite),
+              },
+            });
+          }
+        }
+      }
+    } catch {
+      // Missing or corrupt registry: treat as empty and rebuild from here.
+    }
+  }
+
+  private async writeSessionRegistry() {
+    const path = this.sessionRegistryPath();
+    if (!path || !this.dataDir) return;
+    await writeJsonFileAtomic(path, Object.fromEntries(this.sessionRegistry));
+  }
+
+  async rememberSessionRegistration(
+    bbThreadId: string,
+    entry: SessionBridgeRegistration,
+  ) {
+    await this.withSessionRegistryLock(async () => {
+      await this.loadSessionRegistry();
+      const previous = this.sessionRegistry.get(bbThreadId);
+      this.sessionRegistry.set(bbThreadId, entry);
+      try {
+        await this.writeSessionRegistry();
+      } catch (error) {
+        if (previous) this.sessionRegistry.set(bbThreadId, previous);
+        else this.sessionRegistry.delete(bbThreadId);
+        throw error;
+      }
+    });
+  }
+
+  async forgetSessionRegistration(bbThreadId: string) {
+    await this.withSessionRegistryLock(async () => {
+      await this.loadSessionRegistry();
+      const previous = this.sessionRegistry.get(bbThreadId);
+      this.sessionRegistry.delete(bbThreadId);
+      try {
+        await this.writeSessionRegistry();
+      } catch (error) {
+        if (previous) this.sessionRegistry.set(bbThreadId, previous);
+        throw error;
+      }
+    });
+  }
+
+  async lookupSessionRegistration(
+    bbThreadId: string,
+  ): Promise<SessionBridgeRegistration | undefined> {
+    return this.withSessionRegistryLock(async () => {
+      await this.loadSessionRegistry();
+      return this.sessionRegistry.get(bbThreadId);
+    });
+  }
+
   async start() {
     if (this.baseUrl) return;
     if (this.starting) {
@@ -316,8 +439,11 @@ export class OpenCodeServer {
     let cursor: string | undefined;
     const maxPages = 100;
     for (let page = 0; page < maxPages; page++) {
-      const query = new URLSearchParams({ order: "asc", limit: "200" });
+      // OpenCode rejects combining a pagination cursor with order, so only
+      // the first page carries order=asc; follow-ups send cursor alone.
+      const query = new URLSearchParams({ limit: "200" });
       if (cursor) query.set("cursor", cursor);
+      else query.set("order", "asc");
       const result = await this.request(
         `/api/session/${encodeURIComponent(sessionId)}/message?${query}`,
       );
@@ -369,17 +495,46 @@ export class OpenCodeServer {
       `/api/session/${encodeURIComponent(sessionId)}/interrupt`,
       { method: "POST" },
     ).catch(() => {});
-    await this.request(
-      `/api/session/${encodeURIComponent(sessionId)}/revert/stage`,
-      {
-        method: "POST",
-        body: JSON.stringify({ messageID: target, files: true }),
-      },
-    );
-    await this.request(
-      `/api/session/${encodeURIComponent(sessionId)}/revert/commit`,
-      { method: "POST" },
-    );
+    // The previous turn may still be draining after interrupt; retry staged
+    // reverts that hit a busy session instead of failing edit/rewind outright.
+    let staged = false;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await this.request(
+          `/api/session/${encodeURIComponent(sessionId)}/revert/stage`,
+          {
+            method: "POST",
+            body: JSON.stringify({ messageID: target, files: true }),
+          },
+        );
+        staged = true;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (!/409|busy/i.test(errorMessage(error)) || attempt === 4)
+          throw error;
+        await new Promise((resolve) =>
+          setTimeout(resolve, 400 * (attempt + 1)),
+        );
+      }
+    }
+    if (!staged) throw lastError;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await this.request(
+          `/api/session/${encodeURIComponent(sessionId)}/revert/commit`,
+          { method: "POST" },
+        );
+        return;
+      } catch (error) {
+        if (!/409|busy/i.test(errorMessage(error)) || attempt === 4)
+          throw error;
+        await new Promise((resolve) =>
+          setTimeout(resolve, 400 * (attempt + 1)),
+        );
+      }
+    }
   }
 
   private async consumeEvents(signal: AbortSignal) {

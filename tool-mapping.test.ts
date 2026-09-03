@@ -310,7 +310,7 @@ test("constructs a steered OpenCode compaction request and a complete BB compact
     manualCompactionStartDeltas("request_1", "turn_1", "msg_456").map(
       (delta) => delta.kind,
     ),
-    ["input.accepted", "turn.open", "item.open"],
+    ["turn.open", "input.accepted", "item.open"],
   );
   const completed = manualCompactionOutcomeDeltas({
     providerTurnId: "turn_1",

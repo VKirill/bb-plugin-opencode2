@@ -213,7 +213,9 @@ export class OpenCodeEventRouter {
         // form that no TUI will answer in a BB thread. Relay it to BB's
         // native question UI instead (see handleQuestion).
         if (name.toLowerCase() === "question") {
-          void this.interactions.handleQuestion(session, active, eventId);
+          void this.interactions
+            .handleQuestion(session, active, eventId)
+            .catch(() => {});
         }
       } else {
         const item = active.opened.get(eventId);

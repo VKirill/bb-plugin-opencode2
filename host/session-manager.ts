@@ -245,6 +245,20 @@ export async function registerSession(session: SessionState) {
     throw error;
   }
   await installSessionEnvironment(session);
+  // Best-effort: lets a later same-thread rewind (edit/rewind) find this
+  // session even after a worker restart. A registry failure only degrades to
+  // the old in-memory behavior.
+  await openCodeServer
+    .rememberSessionRegistration(session.bbThreadId, {
+      providerThreadId: session.providerThreadId,
+      cwd: session.cwd,
+      usage: { ...session.usage },
+    })
+    .catch((error) => {
+      process.stderr.write(
+        `[opencode2] Could not persist OpenCode session mapping: ${errorMessage(error)}\n`,
+      );
+    });
 }
 
 export async function unregisterSession(
@@ -259,6 +273,9 @@ export async function unregisterSession(
   }
   session.active?.abortController.abort();
   await releaseDynamicTools(session, reason);
+  await openCodeServer
+    .forgetSessionRegistration(session.bbThreadId)
+    .catch(() => {});
 }
 
 export async function ensureSessionModel(

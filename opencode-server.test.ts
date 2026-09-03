@@ -19,9 +19,41 @@ test("follows checkpoint cursors even when a page is shorter than the requested 
     { id: "msg-1", type: "user" },
     { id: "msg-2", type: "assistant" },
   ]);
-  assert.match(paths[1], /order=asc/);
   assert.match(paths[1], /limit=200/);
   assert.match(paths[1], /cursor=next/);
+  assert.doesNotMatch(paths[1], /order=/);
+});
+
+test("persists the BB thread session mapping for stateless rewinds", async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), "opencode2-sessions-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+
+  const server = new OpenCodeServer();
+  server.setDataDir(dataDir);
+  await server.rememberSessionRegistration("bb-thread", {
+    providerThreadId: "ses_123",
+    cwd: "/repo",
+    usage: { input: 1, output: 2, reasoning: 3, cacheRead: 4, cacheWrite: 5 },
+  });
+  assert.deepEqual(await server.lookupSessionRegistration("bb-thread"), {
+    providerThreadId: "ses_123",
+    cwd: "/repo",
+    usage: { input: 1, output: 2, reasoning: 3, cacheRead: 4, cacheWrite: 5 },
+  });
+
+  // A fresh server over the same data dir still resolves the mapping, so a
+  // restarted worker can tell an in-place rewind from a true fork.
+  const restarted = new OpenCodeServer();
+  restarted.setDataDir(dataDir);
+  assert.equal(
+    (await restarted.lookupSessionRegistration("bb-thread"))?.providerThreadId,
+    "ses_123",
+  );
+  await restarted.forgetSessionRegistration("bb-thread");
+  assert.equal(
+    await restarted.lookupSessionRegistration("bb-thread"),
+    undefined,
+  );
 });
 
 test("serializes MCP registry mutations without dropping persisted entries", async (t) => {
