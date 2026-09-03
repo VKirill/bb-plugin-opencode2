@@ -1,0 +1,72 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { OpenCodeServer } from "./test-host-api.js";
+
+test("follows checkpoint cursors even when a page is shorter than the requested limit", async () => {
+  const paths: string[] = [];
+  const server = new OpenCodeServer();
+  server.request = async (path: string) => {
+    paths.push(path);
+    return paths.length === 1
+      ? { data: [{ id: "msg-1", type: "user" }], cursor: { next: "next" } }
+      : { data: [{ id: "msg-2", type: "assistant" }], cursor: {} };
+  };
+
+  assert.deepEqual(await server.listSessionMessageIds("session"), [
+    { id: "msg-1", type: "user" },
+    { id: "msg-2", type: "assistant" },
+  ]);
+  assert.match(paths[1], /order=asc/);
+  assert.match(paths[1], /limit=200/);
+  assert.match(paths[1], /cursor=next/);
+});
+
+test("serializes MCP registry mutations without dropping persisted entries", async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), "opencode2-registry-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const path = join(dataDir, "opencode2-mcp-registry.json");
+  await writeFile(
+    path,
+    JSON.stringify({
+      existing: { serverName: "bb_existing", cwd: "/existing" },
+    }),
+  );
+
+  const server = new OpenCodeServer();
+  server.setDataDir(dataDir);
+  await Promise.all([
+    server.rememberMcpRegistration("session-a", {
+      serverName: "bb_a",
+      cwd: "/a",
+    }),
+    server.rememberMcpRegistration("session-b", {
+      serverName: "bb_b",
+      cwd: "/b",
+    }),
+    server.rememberMcpRegistration("session-c", {
+      serverName: "bb_c",
+      cwd: "/c",
+    }),
+  ]);
+
+  const stored = JSON.parse(await readFile(path, "utf8"));
+  assert.deepEqual(stored, {
+    existing: { serverName: "bb_existing", cwd: "/existing" },
+    "session-a": { serverName: "bb_a", cwd: "/a" },
+    "session-b": { serverName: "bb_b", cwd: "/b" },
+    "session-c": { serverName: "bb_c", cwd: "/c" },
+  });
+
+  await Promise.all([
+    server.forgetMcpRegistration("session-a"),
+    server.forgetMcpRegistration("session-b"),
+  ]);
+  const remaining = JSON.parse(await readFile(path, "utf8"));
+  assert.deepEqual(remaining, {
+    existing: { serverName: "bb_existing", cwd: "/existing" },
+    "session-c": { serverName: "bb_c", cwd: "/c" },
+  });
+});

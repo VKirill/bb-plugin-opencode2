@@ -1,0 +1,666 @@
+import { join } from "node:path";
+import type { ModelSettings } from "../settings-contract.ts";
+import {
+  BRIDGE_JSON_RPC_ERRORS,
+  createBridgeLineHandler,
+  experimental_defineProviderBridge,
+  experimental_readCliVersion as readCliVersion,
+  initializeParamsSchema,
+  modelListParamsSchema,
+  ProviderRequestDecodeError,
+  providerMaintenanceParamsSchema,
+  runBridgeRequest,
+  skillsConfigureParamsSchema,
+  threadDiscardParamsSchema,
+  threadForkParamsSchema,
+  threadNameSetParamsSchema,
+  threadResumeParamsSchema,
+  threadStartParamsSchema,
+  threadStopParamsSchema,
+  THREAD_DELTA_GRAMMAR_V3,
+  turnStartParamsSchema,
+  turnSteerParamsSchema,
+} from "@get-bb/plugin-sdk/provider-bridge";
+import {
+  emit,
+  handleRuntimeResponse,
+  nextBridgeSequence,
+  notify,
+  rejectPendingRuntimeRequests,
+  sendError,
+  sendResult,
+} from "./bridge-runtime.ts";
+import {
+  DYNAMIC_TOOLS_MCP_ARG,
+  runDynamicToolsMcpStdioChild,
+} from "./dynamic-tools-mcp.ts";
+import {
+  assertModelEnabled,
+  mapModel,
+  modelRefFromOptions,
+  sameModelRef,
+  turnModelRef,
+} from "./models.ts";
+import {
+  dynamicMcpRemovalRequest,
+  steerAcceptedDelta,
+} from "./opencode-requests.ts";
+import { openCodeServer } from "./opencode-server.ts";
+import { promptBody } from "./prompt.ts";
+import {
+  ensureSessionModel,
+  registerSession,
+  releaseDynamicTools,
+  sessionFromParams,
+  shutdownSessions,
+  unregisterSession,
+} from "./session-manager.ts";
+import {
+  isManualCompactionTurn,
+  manualCompactionRequest,
+  manualCompactionStartDeltas,
+} from "./timeline.ts";
+import {
+  errorMessage,
+  inputRecord,
+  sessions,
+  sessionsByProviderId,
+  stringValue,
+  type ActiveTurn,
+  type OpenCodeRecord,
+  type SessionState,
+} from "./types.ts";
+
+type RecordValue = OpenCodeRecord;
+
+let configuredSkillFiles: Map<string, string> | undefined;
+let configuredSkillNames: Set<string> | undefined;
+
+const PARAM_SCHEMAS = {
+  initialize: initializeParamsSchema,
+  "model/list": modelListParamsSchema,
+  "provider/health": providerMaintenanceParamsSchema,
+  "thread/start": threadStartParamsSchema,
+  "thread/resume": threadResumeParamsSchema,
+  "thread/fork": threadForkParamsSchema,
+  "thread/stop": threadStopParamsSchema,
+  "thread/discard": threadDiscardParamsSchema,
+  "thread/name/set": threadNameSetParamsSchema,
+  "turn/start": turnStartParamsSchema,
+  "turn/steer": turnSteerParamsSchema,
+  "skills/configure": skillsConfigureParamsSchema,
+} as const;
+
+function providerSessionId(response: RecordValue): string {
+  const id = stringValue(response.data?.id);
+  if (!id) throw new Error("OpenCode did not return a session ID");
+  return id;
+}
+
+async function configureSession(
+  params: RecordValue,
+  providerThreadId: string,
+  modelSettings: ModelSettings,
+  forceModel: boolean,
+): Promise<SessionState> {
+  const session = sessionFromParams(params, providerThreadId, modelSettings);
+  try {
+    session.nativeSkillNames = await openCodeServer.nativeSkillNames(
+      params.cwd,
+    );
+    await registerSession(session);
+    if (forceModel) {
+      await ensureSessionModel(session, session.model, true);
+    }
+    return session;
+  } catch (error) {
+    await unregisterSession(session, "OpenCode session setup failed");
+    throw error;
+  }
+}
+
+function parseProviderParams(method: string, params: unknown): RecordValue {
+  const schema = PARAM_SCHEMAS[method as keyof typeof PARAM_SCHEMAS];
+  if (!schema) return inputRecord(params);
+  const parsed = schema.safeParse(params ?? {});
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const path = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+    throw new ProviderRequestDecodeError(
+      `Invalid ${method} params: ${path}${issue?.message ?? "validation failed"}`,
+    );
+  }
+  return parsed.data as RecordValue;
+}
+
+async function handle(request: RecordValue) {
+  const params = parseProviderParams(String(request.method), request.params);
+  switch (request.method) {
+    case "initialize":
+      sendResult(request.id, {
+        ok: true,
+        protocolVersion: 2,
+        capabilities: {
+          sessionRestore: true,
+          threadArchive: false,
+          threadRename: true,
+          threadGoalClear: false,
+          fork: "checkpoint",
+          approvalEnforcedBy: "runtime",
+          grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
+          steerMode: "queue",
+          skills: { configure: true },
+        },
+      });
+      return;
+    case "provider/health": {
+      const installedVersion = await readCliVersion("opencode2");
+      const settings = await openCodeServer.readModelSettings();
+      sendResult(request.id, {
+        supported: true,
+        health: {
+          status:
+            settings.providerEnabled && installedVersion
+              ? "ready"
+              : "not_installed",
+          statusMessage: null,
+          accountEmail: null,
+          planLabel: null,
+          installedVersion: settings.providerEnabled ? installedVersion : null,
+          minimumSupportedVersion: null,
+          canInstall: false,
+          canUpdate: false,
+          loginCommand: null,
+        },
+      });
+      return;
+    }
+    case "model/list": {
+      const cwd = params.cwd ?? process.cwd();
+      const settings = await openCodeServer.readModelSettings();
+      if (!settings.providerEnabled || settings.enabledModels?.length === 0) {
+        sendResult(request.id, { models: [], selectedOnlyModels: [] });
+        return;
+      }
+      const result = await openCodeServer.request(
+        `/api/model?directory=${encodeURIComponent(cwd)}`,
+      );
+      const models = (Array.isArray(result.data) ? result.data : [])
+        .filter((model: RecordValue) => {
+          if (
+            model.enabled === false ||
+            !stringValue(model.providerID) ||
+            !stringValue(model.id)
+          ) {
+            return false;
+          }
+          const id = `${model.providerID}/${model.id}`;
+          return (
+            settings.enabledModels === null ||
+            settings.enabledModels.includes(id)
+          );
+        })
+        .sort((left: RecordValue, right: RecordValue) =>
+          `${left.providerID}/${left.id}`.localeCompare(
+            `${right.providerID}/${right.id}`,
+          ),
+        );
+      sendResult(request.id, {
+        models: models.map(mapModel),
+        selectedOnlyModels: [],
+      });
+      return;
+    }
+    case "thread/start": {
+      const modelSettings = await openCodeServer.readModelSettings();
+      if (!modelSettings.providerEnabled) {
+        throw new Error("OpenCode provider is disabled");
+      }
+      const selected = modelRefFromOptions(params.options);
+      assertModelEnabled(
+        selected,
+        modelSettings.enabledModels === null
+          ? null
+          : new Set(modelSettings.enabledModels),
+      );
+      const body: RecordValue = { location: { directory: params.cwd } };
+      if (selected) body.model = selected;
+      const result = await openCodeServer.request("/api/session", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const providerThreadId = providerSessionId(result);
+      try {
+        await configureSession(params, providerThreadId, modelSettings, false);
+      } catch (error) {
+        await openCodeServer
+          .request(`/api/session/${encodeURIComponent(providerThreadId)}`, {
+            method: "DELETE",
+          })
+          .catch(() => {});
+        throw error;
+      }
+      notify("thread/identity", {
+        threadId: params.threadId,
+        providerThreadId,
+        sessionRestorable: true,
+      });
+      emit(params.threadId, [{ kind: "session.reset" }]);
+      sendResult(request.id, { providerThreadId, sessionRestorable: true });
+      return;
+    }
+    case "thread/resume": {
+      await openCodeServer.start();
+      const modelSettings = await openCodeServer.readModelSettings();
+      await configureSession(
+        params,
+        params.providerThreadId,
+        modelSettings,
+        true,
+      );
+      notify("thread/identity", {
+        threadId: params.threadId,
+        providerThreadId: params.providerThreadId,
+        sessionRestorable: true,
+      });
+      emit(params.threadId, [{ kind: "session.reset" }]);
+      sendResult(request.id, {
+        providerThreadId: params.providerThreadId,
+        sessionRestorable: true,
+      });
+      return;
+    }
+    case "thread/fork": {
+      const existing = sessions.get(params.threadId);
+      const checkpointId = stringValue(params.sourceProviderCheckpointId);
+      // BB reuses the same BB thread ID when rewinding (or editing a past
+      // message and resending): truncate the OpenCode session in place via
+      // revert so files are restored and the session ID is preserved. A fork
+      // for a *new* BB thread copies history into a child session instead.
+      const isRewind =
+        !!existing &&
+        existing.providerThreadId === params.sourceProviderThreadId &&
+        !!checkpointId;
+      if (isRewind && checkpointId) {
+        if (existing.active) {
+          await openCodeServer
+            .request(
+              `/api/session/${encodeURIComponent(existing.providerThreadId)}/interrupt`,
+              { method: "POST" },
+            )
+            .catch(() => {});
+          openCodeServer.finish(existing, "interrupted");
+        }
+        await openCodeServer.rewindSessionRetainingThrough(
+          params.sourceProviderThreadId,
+          checkpointId,
+        );
+        const modelSettings = await openCodeServer.readModelSettings();
+        const rewound = sessionFromParams(
+          params,
+          params.sourceProviderThreadId,
+          modelSettings,
+        );
+        rewound.usage = existing.usage;
+        try {
+          rewound.nativeSkillNames = await openCodeServer.nativeSkillNames(
+            params.cwd,
+          );
+          await registerSession(rewound);
+          if (rewound.model && !sameModelRef(existing.model, rewound.model)) {
+            await ensureSessionModel(rewound, rewound.model, true);
+          } else {
+            rewound.model = existing.model ?? rewound.model;
+          }
+        } catch (error) {
+          await unregisterSession(rewound, "OpenCode rewind setup failed");
+          throw error;
+        }
+        notify("thread/identity", {
+          threadId: params.threadId,
+          providerThreadId: params.sourceProviderThreadId,
+          sessionRestorable: true,
+        });
+        sendResult(request.id, {
+          providerThreadId: params.sourceProviderThreadId,
+          sessionRestorable: true,
+        });
+        return;
+      }
+      const boundary = await openCodeServer.forkBoundaryRetainingThrough(
+        params.sourceProviderThreadId,
+        checkpointId,
+      );
+      const result = await openCodeServer.request(
+        `/api/session/${encodeURIComponent(params.sourceProviderThreadId)}/fork`,
+        { method: "POST", body: JSON.stringify({ boundary }) },
+      );
+      const providerThreadId = providerSessionId(result);
+      const modelSettings = await openCodeServer.readModelSettings();
+      try {
+        await configureSession(params, providerThreadId, modelSettings, true);
+      } catch (error) {
+        await openCodeServer
+          .request(`/api/session/${encodeURIComponent(providerThreadId)}`, {
+            method: "DELETE",
+          })
+          .catch(() => {});
+        throw error;
+      }
+      notify("thread/identity", {
+        threadId: params.threadId,
+        providerThreadId,
+        sessionRestorable: true,
+      });
+      emit(params.threadId, [{ kind: "session.reset" }]);
+      sendResult(request.id, { providerThreadId, sessionRestorable: true });
+      return;
+    }
+    case "thread/name/set":
+      await openCodeServer.request(
+        `/api/session/${encodeURIComponent(params.providerThreadId)}/rename`,
+        { method: "POST", body: JSON.stringify({ title: params.title }) },
+      );
+      sendResult(request.id, { ok: true });
+      return;
+    case "turn/start": {
+      const session = sessions.get(params.threadId);
+      if (!session) throw new Error("No active OpenCode session");
+      if (session.active) throw new Error("An OpenCode turn is already active");
+      const active: ActiveTurn = {
+        providerTurnId: `turn_${Date.now()}_${nextBridgeSequence()}`,
+        abortController: new AbortController(),
+        opened: new Map<string, RecordValue>(),
+        pendingTools: new Map<string, string>(),
+        pendingInput: new Map<string, string>(),
+        touchedFiles: new Map<string, string[]>(),
+        openQuestions: new Map<string, string>(),
+        settledTools: new Set<string>(),
+      };
+      session.active = active;
+      if (isManualCompactionTurn(params.input)) {
+        const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        active.manualCompaction = { itemId: messageId };
+        active.opened.set(messageId, { type: "compaction" });
+        emit(
+          session.bbThreadId,
+          manualCompactionStartDeltas(
+            params.clientRequestId,
+            active.providerTurnId,
+            messageId,
+          ),
+        );
+        sendResult(request.id, { threadId: params.threadId });
+        const compact = manualCompactionRequest(
+          session.providerThreadId,
+          messageId,
+        );
+        void openCodeServer
+          .request(compact.path, {
+            method: "POST",
+            body: JSON.stringify(compact.body),
+          })
+          .catch((error) => {
+            if (session.active === active)
+              openCodeServer.finish(session, "failed", errorMessage(error));
+          });
+        return;
+      }
+      emit(session.bbThreadId, [
+        {
+          kind: "input.accepted",
+          clientRequestId: params.clientRequestId,
+          providerTurnId: active.providerTurnId,
+        },
+        { kind: "turn.open", providerTurnId: active.providerTurnId },
+      ]);
+      sendResult(request.id, { threadId: params.threadId });
+      // The beta prompt schema does not accept per-prompt `system` or `tools`.
+      // BB instructions use the session entry installed above; `disallowedTools`
+      // is enforced while building the BB dynamic MCP catalog, while native
+      // OpenCode tool filtering has no supported beta API surface.
+      // OpenCode reasoning effort is a model variant, and the prompt endpoint
+      // accepts no model: switch the session model first so the effort picker
+      // reaches OpenCode, then prompt.
+      // Track the user message ID optimistically so turn.boundary always
+      // carries a providerCheckpointId for rewind/edit, even if the prompt
+      // response is slow. The response ID should match; keep the latest.
+      const promptId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      active.checkpointId = promptId;
+      const desiredModel = turnModelRef(session, params.options);
+      const promptPayload = {
+        id: promptId,
+        ...promptBody(params.input, {
+          configuredSkillNames,
+          disableSubagents: session.disableSubagents,
+          nativeSkillNames: session.nativeSkillNames,
+          skillFiles: configuredSkillFiles,
+        }),
+        delivery: "steer",
+      };
+      void (async () => {
+        try {
+          await ensureSessionModel(session, desiredModel);
+          const result = await openCodeServer.request(
+            `/api/session/${encodeURIComponent(session.providerThreadId)}/prompt`,
+            { method: "POST", body: JSON.stringify(promptPayload) },
+          );
+          const id = stringValue(result?.data?.id);
+          if (id && session.active === active) active.checkpointId = id;
+        } catch (error) {
+          if (session.active === active)
+            openCodeServer.finish(session, "failed", errorMessage(error));
+        }
+      })();
+      return;
+    }
+    case "turn/steer": {
+      const session = sessions.get(params.threadId);
+      if (!session) throw new Error("No active OpenCode session");
+      const clientRequestId = stringValue(params.clientRequestId);
+      if (!clientRequestId)
+        throw new Error("Missing clientRequestId for steered input");
+      // With steerMode "queue" BB keeps the follow-up row as "Steer pending"
+      // until the bridge confirms acceptance, so always close the loop with
+      // input.accepted (mirrors turn/start and the Codex bridge).
+      let active = session.active;
+      const openedTurn = !active;
+      if (!active) {
+        active = {
+          providerTurnId: `turn_${Date.now()}_${nextBridgeSequence()}`,
+          abortController: new AbortController(),
+          opened: new Map<string, RecordValue>(),
+          pendingTools: new Map<string, string>(),
+          pendingInput: new Map<string, string>(),
+          touchedFiles: new Map<string, string[]>(),
+          openQuestions: new Map<string, string>(),
+          settledTools: new Set<string>(),
+        };
+        session.active = active;
+        emit(session.bbThreadId, [
+          { kind: "turn.open", providerTurnId: active.providerTurnId },
+        ]);
+      }
+      try {
+        await ensureSessionModel(
+          session,
+          turnModelRef(session, params.options),
+        );
+        const promptId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const result = await openCodeServer.request(
+          `/api/session/${encodeURIComponent(session.providerThreadId)}/prompt`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              id: promptId,
+              ...promptBody(params.input, {
+                configuredSkillNames,
+                disableSubagents: session.disableSubagents,
+                nativeSkillNames: session.nativeSkillNames,
+                skillFiles: configuredSkillFiles,
+              }),
+              delivery: "steer",
+            }),
+          },
+        );
+        if (session.active !== active) {
+          throw new Error(
+            "OpenCode turn ended before steered input was accepted",
+          );
+        }
+        const id = stringValue(result?.data?.id) ?? promptId;
+        active.checkpointId = id;
+        emit(session.bbThreadId, [
+          steerAcceptedDelta(clientRequestId, active.providerTurnId),
+        ]);
+        sendResult(request.id, { threadId: params.threadId });
+        return;
+      } catch (error) {
+        if (openedTurn && session.active === active) {
+          openCodeServer.finish(session, "failed", errorMessage(error));
+        }
+        throw error;
+      }
+    }
+    case "thread/stop": {
+      const session = sessions.get(params.threadId);
+      if (session) {
+        await openCodeServer
+          .request(
+            `/api/session/${encodeURIComponent(session.providerThreadId)}/interrupt`,
+            { method: "POST" },
+          )
+          .catch(() => {});
+        openCodeServer.finish(session, "interrupted");
+      }
+      sendResult(request.id, { ok: true });
+      return;
+    }
+    case "thread/discard": {
+      const session = sessions.get(params.threadId);
+      if (session) {
+        await openCodeServer
+          .request(
+            `/api/session/${encodeURIComponent(session.providerThreadId)}`,
+            { method: "DELETE" },
+          )
+          .catch(() => {});
+        await releaseDynamicTools(session, "The BB thread was discarded");
+      } else if (
+        typeof params.providerThreadId === "string" &&
+        params.providerThreadId
+      ) {
+        // No local session (another host worker owns the thread, or this
+        // worker restarted since setup): still remove the per-session MCP
+        // bridge so OpenCode does not keep a dead server entry behind.
+        const orphan = await openCodeServer.lookupMcpRegistration(
+          params.providerThreadId,
+        );
+        if (orphan) {
+          const removal = dynamicMcpRemovalRequest(
+            orphan.serverName,
+            orphan.cwd,
+          );
+          try {
+            await openCodeServer.request(removal.path, removal.init);
+            await openCodeServer.forgetMcpRegistration(params.providerThreadId);
+          } catch {
+            // Keep the registry entry so a later discard can retry.
+          }
+        }
+        await openCodeServer
+          .request(
+            `/api/session/${encodeURIComponent(params.providerThreadId)}`,
+            { method: "DELETE" },
+          )
+          .catch(() => {});
+      }
+      sessions.delete(params.threadId);
+      if (session) sessionsByProviderId.delete(session.providerThreadId);
+      else if (typeof params.providerThreadId === "string")
+        sessionsByProviderId.delete(params.providerThreadId);
+      sendResult(request.id, { ok: true });
+      return;
+    }
+    case "skills/configure": {
+      const configured = skillsConfigureParamsSchema.parse(params);
+      configuredSkillNames = new Set(
+        configured.roots.flatMap((root) =>
+          root.skills.map((skill) => skill.name),
+        ),
+      );
+      configuredSkillFiles = new Map(
+        configured.roots.flatMap((root) =>
+          root.skills.map(
+            (skill) =>
+              [skill.name, join(root.path, skill.name, "SKILL.md")] as const,
+          ),
+        ),
+      );
+      sendResult(request.id, { ok: true });
+      return;
+    }
+    default:
+      sendError(
+        request.id,
+        BRIDGE_JSON_RPC_ERRORS.METHOD_NOT_FOUND,
+        `Unknown method "${request.method}"`,
+      );
+  }
+}
+
+function handleParsedMessage(raw: unknown) {
+  if (!raw || typeof raw !== "object") return;
+  const input = raw as RecordValue;
+  if (handleRuntimeResponse(input)) return;
+  if (
+    input.id === undefined ||
+    input.jsonrpc !== "2.0" ||
+    typeof input.method !== "string"
+  )
+    return;
+  runBridgeRequest({
+    request: input as { id: string | number; method: string; params?: object },
+    handleRequest: handle,
+    sendError,
+  });
+}
+
+const handleLine = createBridgeLineHandler({ handleParsedMessage });
+
+// OpenCode launches this same bundled host artifact as the per-thread MCP
+// child. The provider bridge export remains inert in that process.
+if (process.argv.includes(DYNAMIC_TOOLS_MCP_ARG)) {
+  runDynamicToolsMcpStdioChild();
+}
+
+let shutdownPromise: Promise<void> | undefined;
+
+export function shutdownBridge(
+  reason = "OpenCode bridge stopped",
+): Promise<void> {
+  if (!shutdownPromise) {
+    shutdownPromise = (async () => {
+      rejectPendingRuntimeRequests(reason);
+      await shutdownSessions(reason);
+      await openCodeServer.stop();
+    })();
+  }
+  return shutdownPromise;
+}
+
+export const experimental_providerBridge = experimental_defineProviderBridge({
+  handleLine,
+  start: ({ dataDir }) => {
+    openCodeServer.setDataDir(dataDir);
+  },
+  onClose: () => {
+    void shutdownBridge("BB runtime disconnected");
+  },
+  onSigterm: () => {
+    void shutdownBridge();
+  },
+  onSigint: () => {
+    void shutdownBridge();
+  },
+});
