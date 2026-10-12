@@ -233,6 +233,53 @@ export function touchedPaths(name: string, rawInput: unknown): string[] {
 }
 
 /**
+ * One row per MCP call made inside a Code Mode `execute`, from the
+ * `metadata.toolCalls` list OpenCode reports as the code runs. Entries keep
+ * their order, so the index identifies a call.
+ */
+export function codeModeCallRows(metadata: unknown) {
+  const calls = inputRecord(metadata).toolCalls;
+  if (!Array.isArray(calls)) return [];
+  return calls.flatMap((value: unknown, index: number) => {
+    const call = inputRecord(value);
+    const qualified = stringValue(call.tool);
+    if (!qualified) return [];
+    const dot = qualified.indexOf(".");
+    const server = dot > 0 ? qualified.slice(0, dot) : undefined;
+    const tool = dot > 0 ? qualified.slice(dot + 1) : qualified;
+    const args = inputRecord(call.input);
+    const title = presentationTitle(
+      Object.values(args).find(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.trim().length > 0,
+      ) ?? "",
+    );
+    const status = stringValue(call.status) ?? "running";
+    return [
+      {
+        index,
+        status:
+          status === "completed"
+            ? ("completed" as const)
+            : status === "failed" || status === "error"
+              ? ("failed" as const)
+              : ("running" as const),
+        item: {
+          type: "tool",
+          tool,
+          ...(server ? { server } : {}),
+          args,
+        },
+        presentation: {
+          ...toolPresentation(tool),
+          ...(title ? { title } : {}),
+        },
+      },
+    ];
+  });
+}
+
+/**
  * OpenCode names MCP tools `<server>_<tool>`. Calls to the per-session BB
  * tool server render as the BB tool, with the presentation BB supplied.
  */
@@ -452,6 +499,27 @@ export function toolRow(name: string, rawInput: unknown, cwd: string) {
       presentation: {
         icon: { glyph: "Toolbox" },
         label: { pending: "Asking question", completed: "Asked question" },
+        ...(title ? { title } : {}),
+      },
+    };
+  }
+
+  // OpenCode Code Mode: the model runs code against `tools.<server>.<tool>`.
+  // The nested MCP calls are reported separately (see codeModeCallRows).
+  if (tool === "execute" && typeof input.code === "string") {
+    const calls = [
+      ...new Set(
+        [...input.code.matchAll(/tools\.([\w$]+)\.([\w$]+)/g)].map(
+          (match) => `${match[1]}.${match[2]}`,
+        ),
+      ),
+    ];
+    const title = presentationTitle(calls.join(", "));
+    return {
+      item: { type: "tool", tool: name, args: input },
+      presentation: {
+        icon: { glyph: "Code" },
+        label: { pending: "Running code", completed: "Ran code" },
         ...(title ? { title } : {}),
       },
     };

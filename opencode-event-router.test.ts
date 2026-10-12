@@ -371,3 +371,156 @@ test("ignores terminal events from earlier work until the turn's prompt is deliv
   assert.equal(session.active, undefined);
   assert.equal(emitted.at(-1)?.kind, "turn.boundary");
 });
+
+test("nests the MCP calls a Code Mode execute makes under it", async () => {
+  const emitted: OpenCodeRecord[] = [];
+  const active = {
+    providerTurnId: "turn-1",
+    startedAt: Date.now(),
+    abortController: new AbortController(),
+    opened: new Map<string, OpenCodeRecord>(),
+    pendingTools: new Map<string, string>(),
+    pendingInput: new Map<string, string>(),
+    touchedFiles: new Map<string, string[]>(),
+    openQuestions: new Map<string, string>(),
+    settledTools: new Set<string>(),
+  };
+  const session: SessionState = {
+    bbThreadId: "bb-thread",
+    providerThreadId: "ses_1",
+    cwd: "/repo",
+    disableSubagents: true,
+    dynamicTools: [],
+    disallowedTools: new Set(),
+    enabledModels: null,
+    instructions: "",
+    bridgeEnvVars: {},
+    dynamicToolScope: {},
+    active,
+    usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  const router = new OpenCodeEventRouter(
+    async () => ({}),
+    (_threadId, deltas) => emitted.push(...deltas),
+    new Map([[session.providerThreadId, session]]),
+  );
+  const event = (type: string, data: OpenCodeRecord) =>
+    router.handleEvent({
+      type,
+      data: { sessionID: "ses_1", id: "call_exec", ...data },
+    });
+  // Shapes recorded from OpenCode 2.0.27 with a Code Mode MCP server.
+  const code =
+    'const a = await tools.cm_echo.shout({text: "hello"});\nconst b = await tools.cm_echo.shout({text: "world"});\nreturn [a, b];';
+  const hello = { tool: "cm_echo.shout", input: { text: "hello" } };
+  const world = { tool: "cm_echo.shout", input: { text: "world" } };
+  await event("session.tool.input.started", { name: "execute" });
+  await event("session.tool.called", { input: { code } });
+  await event("session.tool.progress", {
+    metadata: { toolCalls: [{ ...hello, status: "running" }] },
+  });
+  await event("session.tool.progress", {
+    metadata: { toolCalls: [{ ...hello, status: "completed" }] },
+  });
+  await event("session.tool.progress", {
+    metadata: {
+      toolCalls: [
+        { ...hello, status: "completed" },
+        { ...world, status: "running" },
+      ],
+    },
+  });
+  await event("session.tool.success", {
+    content: [{ type: "text", text: '["HELLO","WORLD"]' }],
+    metadata: {
+      toolCalls: [
+        { ...hello, status: "completed" },
+        { ...world, status: "completed" },
+      ],
+    },
+  });
+
+  const execOpen = emitted.find(
+    (delta) =>
+      delta.kind === "item.open" && delta.key.providerItemId === "call_exec",
+  );
+  assert.equal(execOpen?.presentation.label.completed, "Ran code");
+  assert.equal(execOpen?.presentation.title, "cm_echo.shout");
+  const nested = emitted.filter((delta) =>
+    String(delta.key?.providerItemId).startsWith("call_exec:call:"),
+  );
+  assert.deepEqual(
+    nested.map((delta) => [delta.kind, delta.key.providerItemId, delta.status]),
+    [
+      ["item.open", "call_exec:call:0", undefined],
+      ["item.close", "call_exec:call:0", "completed"],
+      ["item.open", "call_exec:call:1", undefined],
+      ["item.close", "call_exec:call:1", "completed"],
+    ],
+  );
+  for (const delta of nested) {
+    assert.equal(delta.key.parentRef, "call_exec");
+    assert.equal(delta.item.server, "cm_echo");
+    assert.equal(delta.item.tool, "shout");
+  }
+  const execClose = emitted.findIndex(
+    (delta) =>
+      delta.kind === "item.close" && delta.key.providerItemId === "call_exec",
+  );
+  assert.ok(execClose > emitted.indexOf(nested.at(-1)!));
+});
+
+test("a failed permission reply never escapes as an unhandled rejection", async () => {
+  const active = {
+    providerTurnId: "turn-1",
+    startedAt: Date.now(),
+    abortController: new AbortController(),
+    opened: new Map<string, OpenCodeRecord>(),
+    pendingTools: new Map<string, string>(),
+    pendingInput: new Map<string, string>(),
+    touchedFiles: new Map<string, string[]>(),
+    openQuestions: new Map<string, string>(),
+    settledTools: new Set<string>(),
+  };
+  const session: SessionState = {
+    bbThreadId: "bb-thread",
+    providerThreadId: "ses_1",
+    cwd: "/repo",
+    permissionMode: "full",
+    disableSubagents: true,
+    dynamicTools: [],
+    disallowedTools: new Set(),
+    enabledModels: null,
+    instructions: "",
+    bridgeEnvVars: {},
+    dynamicToolScope: {},
+    active,
+    usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  let replied = false;
+  const router = new OpenCodeEventRouter(
+    async () => {
+      replied = true;
+      throw new Error('OpenCode API 404: {"_tag":"PermissionNotFoundError"}');
+    },
+    () => {},
+    new Map([[session.providerThreadId, session]]),
+  );
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  const stderrWrite = process.stderr.write;
+  process.stderr.write = () => true;
+  try {
+    await router.handleEvent({
+      type: "permission.asked",
+      data: { sessionID: "ses_1", id: "per_1", action: "shell" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } finally {
+    process.stderr.write = stderrWrite;
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.equal(replied, true);
+  assert.deepEqual(unhandled, []);
+});

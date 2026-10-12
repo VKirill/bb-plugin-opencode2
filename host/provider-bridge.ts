@@ -720,7 +720,7 @@ export function shutdownBridge(
   if (!shutdownPromise) {
     shutdownPromise = (async () => {
       rejectPendingRuntimeRequests(reason);
-      await shutdownSessions(reason);
+      await shutdownSessions(reason).catch(() => {});
       await openCodeServer.stop();
     })();
   }

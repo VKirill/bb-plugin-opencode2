@@ -31,7 +31,22 @@ export class OpenCodeInteractions {
     private readonly emitTimeline: typeof emit = emit,
   ) {}
 
+  /**
+   * Never rejects: a reply can 404 when the request was already answered
+   * elsewhere (another client, or OpenCode cancelled it), and an unhandled
+   * rejection would take the whole bridge process down.
+   */
   async handlePermission(session: SessionState, data: RecordValue) {
+    try {
+      await this.resolvePermission(session, data);
+    } catch (error) {
+      process.stderr.write(
+        `[opencode2] Could not answer an OpenCode permission request: ${errorMessage(error)}\n`,
+      );
+    }
+  }
+
+  private async resolvePermission(session: SessionState, data: RecordValue) {
     const active = session.active;
     if (!active) return;
     const sessionId = stringValue(data.sessionID);
@@ -89,7 +104,9 @@ export class OpenCodeInteractions {
           : "reject";
       await this.replyPermission(sessionId, requestId, reply);
     } catch {
-      await this.replyPermission(sessionId, requestId, "reject");
+      await this.replyPermission(sessionId, requestId, "reject").catch(
+        () => {},
+      );
     }
   }
 

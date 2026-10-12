@@ -11,6 +11,7 @@ import {
   providerFailureDeltas,
 } from "./timeline.ts";
 import {
+  codeModeCallRows,
   contentText,
   dynamicToolRow,
   gitDiff,
@@ -414,6 +415,23 @@ export class OpenCodeEventRouter {
         if (item) item.args = data.input;
       }
     }
+    if (
+      (event.type === "session.tool.progress" ||
+        event.type === "session.tool.success" ||
+        event.type === "session.tool.failed") &&
+      active.opened.get(eventId)?.tool === "execute"
+    )
+      this.emitCodeModeCalls(
+        session,
+        active,
+        eventId,
+        data.metadata,
+        event.type === "session.tool.progress"
+          ? undefined
+          : event.type === "session.tool.success"
+            ? "completed"
+            : "failed",
+      );
     if (event.type === "session.tool.progress") {
       const childId = stringValue(inputRecord(data.metadata).sessionID);
       const opened = active.opened.get(eventId);
@@ -754,6 +772,53 @@ export class OpenCodeEventRouter {
         );
       }
     })();
+  }
+
+  /**
+   * Show each MCP call a Code Mode `execute` makes as a row nested under it.
+   * `settle` closes calls still running when the execute itself ends.
+   */
+  private emitCodeModeCalls(
+    session: SessionState,
+    active: ActiveTurn,
+    executeId: string,
+    metadata: unknown,
+    settle?: "completed" | "failed",
+  ) {
+    const deltas: RecordValue[] = [];
+    for (const row of codeModeCallRows(metadata)) {
+      const id = `${executeId}:call:${row.index}`;
+      const key = itemKey(id, "tool");
+      if (active.finishedTools?.has(id)) continue;
+      if (!active.opened.has(id)) {
+        this.parentRefs.set(id, executeId);
+        active.opened.set(id, row.item);
+        deltas.push({
+          kind: "item.open",
+          key,
+          item: row.item,
+          presentation: row.presentation,
+          providerTurnId: active.providerTurnId,
+        });
+      }
+      const status =
+        row.status === "running"
+          ? settle && (settle === "failed" ? "failed" : "completed")
+          : row.status;
+      if (!status) continue;
+      active.opened.delete(id);
+      (active.finishedTools ??= new Set()).add(id);
+      deltas.push({
+        kind: "item.close",
+        key,
+        status,
+        item: row.item,
+        presentation: row.presentation,
+        providerTurnId: active.providerTurnId,
+      });
+    }
+    // Close (and nest) before the execute row closes.
+    if (deltas.length) this.emit(session.bbThreadId, deltas);
   }
 
   private stopShellOutput(active: ActiveTurn, callId: string) {
