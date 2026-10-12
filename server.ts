@@ -183,6 +183,9 @@ export default async function plugin(bb: BbPluginApi) {
       ],
     },
     composerActions: ["plan"],
+    // OpenCode discovers skills in more places than BB scans by default;
+    // the host entry answers with the roots OpenCode actually uses.
+    experimental_resolvesNativeRoots: true,
     // Settings reach every session and turn command as providerOptions, so a
     // change applies on the next turn without waiting for the host sync.
     deriveProviderOptions: () => ({ modelSettings }),

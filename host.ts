@@ -1,4 +1,8 @@
-import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
+import {
+  experimental_defineHostEntry,
+  experimental_filterResolvedNativeRoots,
+  experimental_nativeRootsHostContract,
+} from "@get-bb/plugin-sdk/host";
 import {
   modelSummarySchema,
   opencodeHostContract,
@@ -11,6 +15,7 @@ import {
 } from "./host/maintenance.ts";
 import { openCodeServer } from "./host/opencode-server.ts";
 import { shutdownBridge } from "./host/provider-bridge.ts";
+import { nativeSkillRoots } from "./host/opencode-requests.ts";
 import { sessions } from "./host/types.ts";
 
 export { createDynamicToolCallRouter } from "./host/bridge-runtime.ts";
@@ -43,6 +48,7 @@ export {
   dynamicMcpRemovalRequest,
   forkBoundaryRetainingThrough,
   isSensitiveEnvironmentKey,
+  nativeSkillRoots,
   nextMessageIdAfterCheckpoint,
   revertTargetRetainingThrough,
   sessionEnvironmentRequest,
@@ -88,8 +94,26 @@ export {
 } from "./host/tool-mapping.ts";
 
 export default experimental_defineHostEntry({
-  contract: opencodeHostContract,
+  contract: {
+    ...opencodeHostContract,
+    ...experimental_nativeRootsHostContract,
+  },
   handlers: {
+    // BB lists these directories in the composer for OpenCode threads, so
+    // skills OpenCode found on its own (~/.agents/skills, ~/.claude/skills,
+    // project and config roots) can be invoked with /name.
+    async resolveNativeRoots(input, context) {
+      openCodeServer.setDataDir(context.experimental_paths.dataDir);
+      const skills = await openCodeServer.nativeSkills(
+        input.cwd ?? process.cwd(),
+      );
+      return experimental_filterResolvedNativeRoots(
+        { skills: nativeSkillRoots(skills, input.cwd), commands: [] },
+        {
+          warn: (message) => process.stderr.write(`[opencode2] ${message}\n`),
+        },
+      ).answer;
+    },
     async listModels(input, context) {
       openCodeServer.setDataDir(context.experimental_paths.dataDir);
       const catalog = await openCodeServer.modelCatalog(

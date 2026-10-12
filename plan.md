@@ -271,9 +271,8 @@ harness instead.
    accept-edits, the question tool's native UI, a delegation row, the live
    command output, and the new settings page. I didn't create bb threads
    myself, because the user didn't ask me to.
-2. **Native skill roots.** `experimental_nativeSkillRoots` or
-   `experimental_resolvesNativeRoots` backed by `GET /api/skill`, so bb's
-   typeahead lists OpenCode skills.
+2. ~~Native skill roots~~ (done: `resolveNativeRoots` answers from
+   OpenCode's `GET /api/skill`).
 3. **Diagnostics.** Forward unknown OpenCode events for an active session as
    `unhandled` deltas, rate-limited.
 4. **Child-session questions.** A subagent's question closes without its

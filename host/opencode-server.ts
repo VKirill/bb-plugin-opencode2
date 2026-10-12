@@ -531,6 +531,20 @@ export class OpenCodeServer {
     }
   }
 
+  /** Skills OpenCode discovered for a workspace: ID and SKILL.md path. */
+  async nativeSkills(cwd: string): Promise<{ id: string; path?: string }[]> {
+    const result = await this.request(`/api/skill?${locationQuery(cwd)}`);
+    return (Array.isArray(result.data) ? result.data : []).flatMap(
+      (value: unknown) => {
+        const skill = inputRecord(value);
+        const id = stringValue(skill.id ?? skill.name);
+        if (!id) return [];
+        const path = stringValue(skill.location ?? skill.path);
+        return [{ id, ...(path ? { path } : {}) }];
+      },
+    );
+  }
+
   async nativeSkillNames(cwd: string) {
     try {
       const result = await this.request(`/api/skill?${locationQuery(cwd)}`);

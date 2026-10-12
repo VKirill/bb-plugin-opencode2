@@ -7,7 +7,9 @@ import {
   mapModel,
   metadataFileChanges,
   modelCatalogEntry,
+  nativeSkillRoots,
   permissionReplyBody,
+  promptBody,
   resolveModelVariant,
   sessionPermissionRules,
   sessionPermissionsRequest,
@@ -253,4 +255,69 @@ test("renders BB dynamic tool calls as the BB tool", () => {
     dynamicToolRow("bb_opencode2_abc", tools, "shell", {}),
     undefined,
   );
+});
+
+test("derives BB skill roots from the skills OpenCode discovered", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const base = mkdtempSync(join(tmpdir(), "oc-skills-"));
+  const home = join(base, "home", ".agents", "skills");
+  const repo = join(base, "repo");
+  const project = join(repo, ".opencode", "skills");
+  for (const dir of [
+    join(home, "unslop"),
+    join(home, "grill-me"),
+    join(project, "local"),
+  ]) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), "---\nname: x\n---\n");
+  }
+  assert.deepEqual(
+    nativeSkillRoots(
+      [
+        { path: "/builtin/opencode.md" },
+        { path: join(home, "unslop", "SKILL.md") },
+        { path: join(home, "grill-me", "SKILL.md") },
+        { path: join(project, "local", "SKILL.md") },
+        { path: join(base, "missing", "gone", "SKILL.md") },
+        {},
+      ],
+      repo,
+    ),
+    [
+      { path: home, origin: "user", shape: "skills" },
+      { path: project, origin: "project", shape: "skills" },
+    ],
+  );
+});
+
+test("forwards native OpenCode skill mentions, not only BB-configured ones", () => {
+  const body = promptBody(
+    [
+      {
+        type: "text",
+        text: "/unslop this README",
+        mentions: [
+          {
+            start: 0,
+            end: 7,
+            resource: {
+              kind: "command",
+              source: "skill",
+              trigger: "/",
+              name: "unslop",
+            },
+          },
+        ],
+      },
+    ],
+    {
+      configuredSkillNames: new Set(["bb-cli"]),
+      nativeSkillNames: new Set(["unslop"]),
+    },
+  );
+  assert.deepEqual(body.skills, [
+    { id: "unslop", mention: { start: 0, end: 7, text: "/unslop" } },
+  ]);
 });

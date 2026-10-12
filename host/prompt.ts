@@ -132,7 +132,14 @@ export function promptBody(
           : undefined;
       if (!id || start === undefined || end === undefined || end < start)
         continue;
-      if (opts?.configuredSkillNames && !opts.configuredSkillNames.has(id))
+      // BB offers two kinds of skill: its own configured roots, and the
+      // agent's native skills (OpenCode's own discovery, which BB lists
+      // through resolveNativeRoots). Anything else is plain text.
+      if (
+        opts?.configuredSkillNames &&
+        !opts.configuredSkillNames.has(id) &&
+        !opts.nativeSkillNames?.has(id)
+      )
         continue;
       const promptMention = {
         start: textOffset + start,

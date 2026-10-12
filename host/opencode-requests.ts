@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { delimiter, dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, delimiter, dirname, isAbsolute, relative } from "node:path";
 import {
   experimental_resolveExecutablePath as resolveExecutablePath,
   sanitizeInheritedChildProcessEnv,
@@ -300,4 +301,30 @@ export function revertTargetRetainingThrough(
     return ids.includes(checkpointId) ? undefined : checkpointId;
   }
   return next;
+}
+
+/**
+ * Skill roots for BB's composer, derived from the SKILL.md files OpenCode
+ * discovered: each skill lives at `<root>/<name>/SKILL.md`. Built-in skills
+ * (no file on disk) are skipped; roots inside the workspace are `project`.
+ */
+export function nativeSkillRoots(
+  skills: readonly { path?: string }[],
+  cwd: string | null,
+) {
+  const roots = new Map<string, "project" | "user">();
+  for (const skill of skills) {
+    if (!skill.path || !isAbsolute(skill.path)) continue;
+    if (basename(skill.path) !== "SKILL.md") continue;
+    const root = dirname(dirname(skill.path));
+    if (!existsSync(root)) continue;
+    const inWorkspace =
+      cwd !== null && (root === cwd || !relative(cwd, root).startsWith(".."));
+    roots.set(root, inWorkspace ? "project" : "user");
+  }
+  return [...roots].map(([path, origin]) => ({
+    path,
+    origin,
+    shape: "skills" as const,
+  }));
 }
