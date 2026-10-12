@@ -22,6 +22,7 @@ import {
   errorMessage,
   inputRecord,
   stringValue,
+  sessions,
   type OpenCodeRecord,
   type SessionState,
 } from "./types.ts";
@@ -33,6 +34,9 @@ const MCP_REGISTRY_FILE = "opencode2-mcp-registry.json";
 const SESSION_REGISTRY_FILE = "opencode2-session-registry.json";
 
 const MODEL_CATALOG_TTL_MS = 60_000;
+const RECONCILE_INTERVAL_MS = 30_000;
+const RECONCILE_MIN_TURN_AGE_MS = 10_000;
+const RECONCILE_SETTLE_MS = 5_000;
 const MODEL_CATALOG_COLD_RETRIES = 10;
 const MODEL_CATALOG_COLD_RETRY_MS = 300;
 
@@ -90,6 +94,7 @@ export class OpenCodeServer {
   private starting?: Promise<void>;
   private dataDir?: string;
   private eventAbortController?: AbortController;
+  private watchdog?: ReturnType<typeof setInterval>;
   private connectionGeneration = 0;
   private readonly eventRouter = new OpenCodeEventRouter((path, init) =>
     this.request(path, init),
@@ -376,6 +381,13 @@ export class OpenCodeServer {
     this.eventAbortController?.abort();
     this.eventAbortController = new AbortController();
     void this.consumeEvents(this.eventAbortController.signal);
+    if (!this.watchdog) {
+      this.watchdog = setInterval(
+        () => void this.reconcileActiveTurns(),
+        RECONCILE_INTERVAL_MS,
+      );
+      this.watchdog.unref();
+    }
   }
 
   private async cli(args: string[]): Promise<string> {
@@ -645,6 +657,7 @@ export class OpenCodeServer {
   }
 
   private async consumeEvents(signal: AbortSignal) {
+    let connectedBefore = false;
     while (this.baseUrl && !signal.aborted) {
       try {
         const response = await fetch(`${this.baseUrl}/api/event`, {
@@ -655,6 +668,10 @@ export class OpenCodeServer {
           throw new Error(
             `OpenCode event stream returned HTTP ${response.status}`,
           );
+        // The stream does not replay: anything that happened while it was
+        // down is gone, including the end of a turn.
+        if (connectedBefore) void this.reconcileActiveTurns();
+        connectedBefore = true;
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -684,6 +701,66 @@ export class OpenCodeServer {
     }
   }
 
+  private reconciling = false;
+
+  /**
+   * Finish BB turns whose OpenCode execution already ended without BB seeing
+   * the terminal event (a dropped event stream, or a service restart). Runs
+   * after every stream reconnect and periodically as a watchdog. A turn is
+   * only settled once OpenCode reports the session idle since the turn began
+   * and that idle state has had time for its trailing events to arrive.
+   */
+  async reconcileActiveTurns(now = Date.now()): Promise<void> {
+    if (this.reconciling) return;
+    const candidates = [...sessions.values()].filter(
+      (session) =>
+        session.active?.promptDelivered === true &&
+        !session.active.manualCompaction &&
+        now - session.active.startedAt > RECONCILE_MIN_TURN_AGE_MS,
+    );
+    if (candidates.length === 0) return;
+    this.reconciling = true;
+    try {
+      const running = inputRecord(
+        (await this.request("/api/session/active")).data,
+      );
+      for (const session of candidates) {
+        const active = session.active;
+        if (!active || session.providerThreadId in running) continue;
+        const info = inputRecord(
+          (
+            await this.request(
+              `/api/session/${encodeURIComponent(session.providerThreadId)}`,
+            ).catch((): OpenCodeRecord => ({}))
+          ).data,
+        );
+        const idle = inputRecord(info.time).idle;
+        if (
+          session.active !== active ||
+          typeof idle !== "number" ||
+          idle < active.startedAt ||
+          Date.now() - idle < RECONCILE_SETTLE_MS
+        )
+          continue;
+        if (info.outcome === "failed")
+          this.finish(
+            session,
+            "failed",
+            "OpenCode reported this turn failed while BB was disconnected from its event stream",
+          );
+        else
+          this.finish(
+            session,
+            info.outcome === "interrupted" ? "interrupted" : "completed",
+          );
+      }
+    } catch {
+      // The service is unreachable; the next reconnect or tick retries.
+    } finally {
+      this.reconciling = false;
+    }
+  }
+
   async handleEvent(event: RecordValue): Promise<void> {
     await this.eventRouter.handleEvent(event);
   }
@@ -701,6 +778,8 @@ export class OpenCodeServer {
     // it here. Just drop our reference so the event loop exits.
     this.connectionGeneration += 1;
     this.baseUrl = undefined;
+    if (this.watchdog) clearInterval(this.watchdog);
+    this.watchdog = undefined;
     this.eventAbortController?.abort();
     this.eventAbortController = undefined;
   }

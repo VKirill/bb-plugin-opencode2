@@ -7,6 +7,7 @@ test("translates current OpenCode v2 text, reasoning, tool, and terminal events"
   const emitted: OpenCodeRecord[] = [];
   const active = {
     providerTurnId: "turn-1",
+    startedAt: Date.now(),
     abortController: new AbortController(),
     opened: new Map<string, OpenCodeRecord>(),
     pendingTools: new Map<string, string>(),

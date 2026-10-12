@@ -19,6 +19,9 @@ export type ModelRef = {
 
 export type ActiveTurn = {
   providerTurnId: string;
+  startedAt: number;
+  /** Set once OpenCode accepted the prompt; reconciliation waits for it. */
+  promptDelivered?: boolean;
   abortController: AbortController;
   manualCompaction?: { itemId: string };
   checkpointId?: string;

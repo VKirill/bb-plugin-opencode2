@@ -420,6 +420,7 @@ async function handle(request: RecordValue) {
       if (session.active) throw new Error("An OpenCode turn is already active");
       const active: ActiveTurn = {
         providerTurnId: `turn_${Date.now()}_${nextBridgeSequence()}`,
+        startedAt: Date.now(),
         abortController: new AbortController(),
         opened: new Map<string, RecordValue>(),
         pendingTools: new Map<string, string>(),
@@ -503,6 +504,7 @@ async function handle(request: RecordValue) {
           );
           const id = stringValue(result?.data?.id);
           if (id && session.active === active) active.checkpointId = id;
+          active.promptDelivered = true;
         } catch (error) {
           if (session.active === active) {
             // The optimistic prompt ID was never created in OpenCode, so it
@@ -530,6 +532,7 @@ async function handle(request: RecordValue) {
       if (!active) {
         active = {
           providerTurnId: `turn_${Date.now()}_${nextBridgeSequence()}`,
+          startedAt: Date.now(),
           abortController: new AbortController(),
           opened: new Map<string, RecordValue>(),
           pendingTools: new Map<string, string>(),
@@ -569,6 +572,7 @@ async function handle(request: RecordValue) {
         }
         const id = stringValue(result?.data?.id) ?? promptId;
         active.checkpointId = id;
+        active.promptDelivered = true;
         emit(session.bbThreadId, [
           steerAcceptedDelta(clientRequestId, active.providerTurnId),
         ]);

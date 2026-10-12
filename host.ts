@@ -60,6 +60,7 @@ export {
 } from "./host/prompt.ts";
 export { experimental_providerBridge } from "./host/provider-bridge.ts";
 export { sessionFromParams } from "./host/session-manager.ts";
+export { sessions } from "./host/types.ts";
 export {
   boundedTimelineDelta,
   boundedTimelineText,
