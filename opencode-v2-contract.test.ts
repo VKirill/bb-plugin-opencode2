@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   forkBoundaryRetainingThrough,
   mapModel,
+  metadataFileChanges,
   modelCatalogEntry,
   permissionReplyBody,
   resolveModelVariant,
@@ -11,6 +12,7 @@ import {
   sessionPermissionsRequest,
   sessionRenameRequest,
   shellExitCode,
+  workspacePath,
 } from "./test-host-api.js";
 
 test("accept-edits asks for everything except reads, searches, and edits", () => {
@@ -165,4 +167,36 @@ test("reads shell exit codes from v2 tool metadata or content", () => {
     2,
   );
   assert.equal(shellExitCode({ metadata: { status: "completed" } }), undefined);
+});
+
+test("builds file-change rows from OpenCode's edit metadata patches", () => {
+  assert.deepEqual(
+    metadataFileChanges(
+      {
+        files: [
+          {
+            file: "src/a.ts",
+            patch: "@@ -1 +1 @@\n-a\n+b\n",
+            status: "modified",
+          },
+          { file: "new.ts", status: "added" },
+          { file: "old.ts", status: "deleted" },
+          { status: "modified" },
+        ],
+      },
+      "/repo",
+    ),
+    [
+      { path: "src/a.ts", kind: "update", diff: "@@ -1 +1 @@\n-a\n+b\n" },
+      { path: "new.ts", kind: "add" },
+      { path: "old.ts", kind: "delete" },
+    ],
+  );
+  assert.deepEqual(metadataFileChanges({ truncated: false }, "/repo"), []);
+});
+
+test("reports touched files relative to the workspace", () => {
+  assert.equal(workspacePath("/repo", "/repo/src/a.ts"), "src/a.ts");
+  assert.equal(workspacePath("/repo", "src/a.ts"), "src/a.ts");
+  assert.equal(workspacePath("/repo", "/elsewhere/b.ts"), "/elsewhere/b.ts");
 });

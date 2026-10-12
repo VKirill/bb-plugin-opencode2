@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   experimental_fileReadPresentation as nativeFileReadPresentation,
@@ -40,6 +40,73 @@ export async function gitDiff(cwd: string, file: string): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/** Full-content diff for a file git does not track yet. */
+export async function gitDiffNewFile(
+  cwd: string,
+  file: string,
+): Promise<string> {
+  try {
+    await execFileAsync(
+      "git",
+      ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", file],
+      { cwd, timeout: 2_000, encoding: "utf8", maxBuffer: 256 * 1024 },
+    );
+    return "";
+  } catch (error) {
+    // `git diff --no-index` exits 1 when the files differ.
+    const stdout = (error as { stdout?: unknown }).stdout;
+    if (typeof stdout !== "string") return "";
+    return stdout.length > 32_000 ? `${stdout.slice(0, 32_000)}…` : stdout;
+  }
+}
+
+function realpathOr(path: string) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Workspace-relative path for a file OpenCode touched. OpenCode resolves
+ * symlinks (for example /tmp -> /private/tmp on macOS) and reports paths
+ * relative to the unresolved cwd, so compare real paths on both sides.
+ */
+export function workspacePath(cwd: string, file: string): string {
+  const absolute = resolve(cwd, file);
+  for (const base of [cwd, realpathOr(cwd)]) {
+    const rel = relative(base, absolute);
+    if (rel && !rel.startsWith("..") && !isAbsolute(rel)) return rel;
+  }
+  const real = realpathOr(absolute);
+  const rel = relative(realpathOr(cwd), real);
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : absolute;
+}
+
+/**
+ * OpenCode v2 edit tools report each file they touched with a unified patch:
+ * `metadata.files: [{file, patch, status: added|modified|deleted}]`.
+ */
+export function metadataFileChanges(metadata: unknown, cwd: string) {
+  const files = inputRecord(metadata).files;
+  if (!Array.isArray(files)) return [];
+  return files.flatMap((value: unknown) => {
+    const entry = inputRecord(value);
+    const file = stringValue(entry.file);
+    if (!file) return [];
+    const path = workspacePath(cwd, file);
+    const kind =
+      entry.status === "added"
+        ? "add"
+        : entry.status === "deleted"
+          ? "delete"
+          : "update";
+    const patch = stringValue(entry.patch);
+    return [{ path, kind, ...(patch ? { diff: patch } : {}) }];
+  });
 }
 
 export function contentText(value: unknown) {

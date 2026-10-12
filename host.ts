@@ -30,6 +30,7 @@ export {
 export {
   OpenCodeEventRouter,
   shellExitCode,
+  usageDeltas,
 } from "./host/opencode-event-router.ts";
 export {
   dynamicMcpRegistrationRequest,
@@ -71,7 +72,12 @@ export {
   providerFailureDeltas,
   timelineDeltasForEmission,
 } from "./host/timeline.ts";
-export { toolRow, touchedPaths } from "./host/tool-mapping.ts";
+export {
+  metadataFileChanges,
+  toolRow,
+  touchedPaths,
+  workspacePath,
+} from "./host/tool-mapping.ts";
 
 export default experimental_defineHostEntry({
   contract: opencodeHostContract,

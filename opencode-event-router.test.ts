@@ -28,6 +28,7 @@ test("translates current OpenCode v2 text, reasoning, tool, and terminal events"
     dynamicToolScope: {},
     active,
     usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000,
   };
   const sessionLookup = new Map([[session.providerThreadId, session]]);
   const router = new OpenCodeEventRouter(
@@ -113,6 +114,16 @@ test("translates current OpenCode v2 text, reasoning, tool, and terminal events"
       cache: { read: 4, write: 5 },
     },
   });
+  // OpenCode follows each step with the session's cumulative totals.
+  await event("session.usage.updated", {
+    cost: 0,
+    tokens: {
+      input: 30,
+      output: 20,
+      reasoning: 10,
+      cache: { read: 40, write: 50 },
+    },
+  });
   await event("session.execution.succeeded", {});
 
   const openedKeys = emitted
@@ -151,7 +162,11 @@ test("translates current OpenCode v2 text, reasoning, tool, and terminal events"
 
   const usage = emitted.find((delta) => delta.kind === "usage");
   assert.equal(usage?.last.totalTokens, 15);
-  assert.equal(usage?.total.totalTokens, 15);
+  assert.equal(usage?.total.totalTokens, 150);
+  assert.equal(usage?.modelContextWindow, 1000);
+  const context = emitted.find((delta) => delta.kind === "contextWindow");
+  assert.equal(context?.used, 15);
+  assert.equal(context?.size, 1000);
   assert.equal(session.active, undefined);
   assert.equal(emitted.at(-1)?.kind, "turn.boundary");
   assert.equal(emitted.at(-1)?.status, "completed");

@@ -2,13 +2,23 @@ import { experimental_COMPACTION_PRESENTATION as compactionPresentation } from "
 import { dynamicToolCallRouter, emit } from "./bridge-runtime.ts";
 import { OpenCodeInteractions } from "./opencode-interactions.ts";
 import { toolFailureError } from "./prompt.ts";
+import { locationQuery } from "./opencode-requests.ts";
 import {
+  boundedTimelineText,
   itemKey,
   itemKeyForOpenItem,
   manualCompactionOutcomeDeltas,
   providerFailureDeltas,
 } from "./timeline.ts";
-import { contentText, gitDiff, toolRow, touchedPaths } from "./tool-mapping.ts";
+import {
+  contentText,
+  gitDiff,
+  gitDiffNewFile,
+  metadataFileChanges,
+  toolRow,
+  touchedPaths,
+  workspacePath,
+} from "./tool-mapping.ts";
 import {
   inputRecord,
   parseInputText,
@@ -20,6 +30,10 @@ import {
 } from "./types.ts";
 
 type RecordValue = OpenCodeRecord;
+
+const SHELL_OUTPUT_POLL_MS = 400;
+const SHELL_OUTPUT_CHUNK_BYTES = 32 * 1024;
+
 type RequestOpenCode = (
   path: string,
   init?: RequestInit,
@@ -38,16 +52,102 @@ export function shellExitCode(data: RecordValue): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
+function tokenCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : 0;
+}
+
+function tokenBreakdown(raw: unknown) {
+  const tokens = inputRecord(raw);
+  const cache = inputRecord(tokens.cache);
+  const breakdown = {
+    inputTokens: tokenCount(tokens.input),
+    outputTokens: tokenCount(tokens.output),
+    reasoningOutputTokens: tokenCount(tokens.reasoning),
+    cachedInputTokens: tokenCount(cache.read),
+  };
+  const cacheWrite = tokenCount(cache.write);
+  return {
+    breakdown: {
+      ...breakdown,
+      totalTokens:
+        breakdown.inputTokens +
+        breakdown.outputTokens +
+        breakdown.reasoningOutputTokens +
+        breakdown.cachedInputTokens +
+        cacheWrite,
+    },
+    cacheWrite,
+  };
+}
+
+/**
+ * `session.usage.updated` carries OpenCode's cumulative session totals, so it
+ * stays correct across resumes and workers. The latest step's tokens are the
+ * last request's usage and approximate the live context size.
+ */
+export function usageDeltas(
+  session: SessionState,
+  active: ActiveTurn,
+  totals: unknown,
+): RecordValue[] {
+  const total = tokenBreakdown(totals);
+  const last = tokenBreakdown(active.lastStepTokens ?? {});
+  session.usage = {
+    input: total.breakdown.inputTokens,
+    output: total.breakdown.outputTokens,
+    reasoning: total.breakdown.reasoningOutputTokens,
+    cacheRead: total.breakdown.cachedInputTokens,
+    cacheWrite: total.cacheWrite,
+  };
+  const size = session.contextWindow ?? null;
+  const used = active.lastStepTokens ? last.breakdown.totalTokens : null;
+  return [
+    {
+      kind: "usage",
+      total: total.breakdown,
+      last: last.breakdown,
+      modelContextWindow: size,
+      providerTurnId: active.providerTurnId,
+    },
+    ...(used !== null
+      ? [
+          {
+            kind: "contextWindow",
+            used,
+            size,
+            estimated: false,
+            attach: "currentOrLast",
+            providerTurnId: active.providerTurnId,
+          },
+        ]
+      : []),
+  ];
+}
+
+function retryErrorCategory(error: RecordValue) {
+  const text =
+    `${stringValue(error.type) ?? ""} ${stringValue(error.message) ?? ""}`.toLowerCase();
+  if (/rate.?limit|429|too many requests/.test(text)) return "rate-limit";
+  if (/overload|529|503|unavailable/.test(text)) return "overloaded";
+  if (/timeout|connection|network|econn|socket/.test(text))
+    return "connection-failed";
+  return undefined;
+}
+
 export class OpenCodeEventRouter {
   private readonly interactions: OpenCodeInteractions;
   private readonly emitTimeline: typeof emit;
   private readonly sessionLookup: ReadonlyMap<string, SessionState>;
+  private readonly request: RequestOpenCode;
 
   constructor(
     request: RequestOpenCode,
     emitTimeline: typeof emit = emit,
     sessionLookup: ReadonlyMap<string, SessionState> = sessionsByProviderId,
   ) {
+    this.request = request;
     this.interactions = new OpenCodeInteractions(request);
     this.emitTimeline = emitTimeline;
     this.sessionLookup = sessionLookup;
@@ -235,10 +335,16 @@ export class OpenCodeEventRouter {
         if (item) item.args = data.input;
       }
     }
+    if (event.type === "session.tool.progress") {
+      const shellId = stringValue(inputRecord(data.metadata).shellID);
+      if (shellId && active.opened.get(eventId)?.type === "command")
+        this.streamShellOutput(session, active, eventId, shellId);
+    }
     if (
       event.type === "session.tool.success" ||
       event.type === "session.tool.failed"
     ) {
+      this.stopShellOutput(active, eventId);
       // handleQuestion may already have closed + answered this call.
       if (active.settledTools.has(eventId)) {
         active.settledTools.delete(eventId);
@@ -318,7 +424,10 @@ export class OpenCodeEventRouter {
           active.touchedFiles.get(eventId) ?? touchedPaths(name, input);
         active.touchedFiles.delete(eventId);
         active.pendingInput.delete(eventId);
-        if (touched.length) {
+        const patched = metadataFileChanges(data.metadata, session.cwd);
+        if (patched.length) {
+          this.emitFileChangeRow(session, active, `files:${eventId}`, patched);
+        } else if (touched.length) {
           await this.emitFileChanges(
             session,
             active,
@@ -331,51 +440,30 @@ export class OpenCodeEventRouter {
         active.pendingInput.delete(eventId);
       }
     }
-    if (event.type === "session.step.ended") {
-      const tokens = inputRecord(data.tokens);
-      const cache = inputRecord(tokens.cache);
-      const tokenCount = (value: unknown) =>
-        typeof value === "number" && Number.isFinite(value) && value >= 0
-          ? value
-          : 0;
-      const cachedWriteTokens = tokenCount(cache.write);
-      const last = {
-        inputTokens: tokenCount(tokens.input),
-        outputTokens: tokenCount(tokens.output),
-        reasoningOutputTokens: tokenCount(tokens.reasoning),
-        cachedInputTokens: tokenCount(cache.read),
-        totalTokens:
-          tokenCount(tokens.input) +
-          tokenCount(tokens.output) +
-          tokenCount(tokens.reasoning) +
-          tokenCount(cache.read) +
-          cachedWriteTokens,
-      };
-      session.usage = {
-        input: session.usage.input + last.inputTokens,
-        output: session.usage.output + last.outputTokens,
-        reasoning: session.usage.reasoning + last.reasoningOutputTokens,
-        cacheRead: session.usage.cacheRead + last.cachedInputTokens,
-        cacheWrite: session.usage.cacheWrite + cachedWriteTokens,
-      };
+    if (
+      event.type === "session.step.ended" ||
+      event.type === "session.step.failed"
+    ) {
+      if (data.tokens !== undefined)
+        active.lastStepTokens = inputRecord(data.tokens);
+    }
+    if (event.type === "session.usage.updated") {
+      this.emitTimeline(
+        session.bbThreadId,
+        usageDeltas(session, active, data.tokens),
+      );
+    }
+    if (event.type === "session.retry.scheduled") {
+      const error = inputRecord(data.error);
+      const attempt =
+        typeof data.attempt === "number" ? ` (attempt ${data.attempt})` : "";
+      const category = retryErrorCategory(error);
       this.emitTimeline(session.bbThreadId, [
         {
-          kind: "usage",
-          total: {
-            ...last,
-            inputTokens: session.usage.input,
-            outputTokens: session.usage.output,
-            reasoningOutputTokens: session.usage.reasoning,
-            cachedInputTokens: session.usage.cacheRead,
-            totalTokens:
-              session.usage.input +
-              session.usage.output +
-              session.usage.reasoning +
-              session.usage.cacheRead +
-              session.usage.cacheWrite,
-          },
-          last,
-          modelContextWindow: null,
+          kind: "provider.error",
+          message: `${stringValue(error.message) ?? "OpenCode model request failed"}. Retrying${attempt}.`,
+          willRetry: true,
+          ...(category ? { category } : {}),
           providerTurnId: active.providerTurnId,
         },
       ]);
@@ -503,6 +591,68 @@ export class OpenCodeEventRouter {
     return true;
   }
 
+  /**
+   * OpenCode v2 runs shell tools as background shells and only reports their
+   * output when the tool finishes. Poll the shell's byte-cursor output API so
+   * BB's command row streams like a local terminal.
+   */
+  private streamShellOutput(
+    session: SessionState,
+    active: ActiveTurn,
+    callId: string,
+    shellId: string,
+  ) {
+    active.shellPolls ??= new Map();
+    if (active.shellPolls.has(callId)) return;
+    const poll = { stopped: false };
+    active.shellPolls.set(callId, poll);
+    void (async () => {
+      let cursor = 0;
+      while (!poll.stopped && session.active === active) {
+        try {
+          const result = await this.request(
+            `/api/shell/${encodeURIComponent(shellId)}/output?${locationQuery(session.cwd)}&cursor=${cursor}`,
+            { signal: active.abortController.signal },
+          );
+          const output = inputRecord(result.data);
+          if (
+            !poll.stopped &&
+            session.active === active &&
+            typeof output.output === "string" &&
+            output.output.length > 0
+          ) {
+            this.emitTimeline(session.bbThreadId, [
+              {
+                kind: "item.outputDelta",
+                key: itemKey(callId, "tool"),
+                channel: "command",
+                text: boundedTimelineText(
+                  output.output,
+                  SHELL_OUTPUT_CHUNK_BYTES,
+                ),
+                providerTurnId: active.providerTurnId,
+              },
+            ]);
+          }
+          if (typeof output.cursor === "number") cursor = output.cursor;
+        } catch {
+          // The shell is gone (finished and cleaned up) or the turn ended.
+          return;
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, SHELL_OUTPUT_POLL_MS),
+        );
+      }
+    })();
+  }
+
+  private stopShellOutput(active: ActiveTurn, callId: string) {
+    const poll = active.shellPolls?.get(callId);
+    if (!poll) return;
+    poll.stopped = true;
+    active.shellPolls?.delete(callId);
+  }
+
   private async emitFileChanges(
     session: SessionState,
     active: ActiveTurn,
@@ -513,11 +663,26 @@ export class OpenCodeEventRouter {
     // suppressed, so render the change from the tool input recorded at call
     // time. The event reader awaits this method to preserve delta ordering.
     const changes = await Promise.all(
-      paths.map(async (file) => {
+      paths.map(async (touched) => {
+        const file = workspacePath(session.cwd, touched);
         const diff = await gitDiff(session.cwd, file);
-        return { path: file, kind: "update", ...(diff ? { diff } : {}) };
+        if (diff) return { path: file, kind: "update", diff };
+        // An untracked new file has no `git diff`; show its whole content.
+        const added = await gitDiffNewFile(session.cwd, file);
+        return added
+          ? { path: file, kind: "add", diff: added }
+          : { path: file, kind: "update" };
       }),
     );
+    this.emitFileChangeRow(session, active, key, changes);
+  }
+
+  private emitFileChangeRow(
+    session: SessionState,
+    active: ActiveTurn,
+    key: string,
+    changes: RecordValue[],
+  ) {
     const item = { type: "fileChange", changes };
     this.emitTimeline(session.bbThreadId, [
       {
@@ -557,6 +722,8 @@ export class OpenCodeEventRouter {
       session.active = undefined;
       return;
     }
+    for (const poll of active.shellPolls?.values() ?? []) poll.stopped = true;
+    active.shellPolls?.clear();
     dynamicToolCallRouter.resolve(
       session.dynamicToolScope,
       "OpenCode turn ended before the BB tool returned",

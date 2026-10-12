@@ -28,6 +28,10 @@ export type ActiveTurn = {
   touchedFiles: Map<string, string[]>;
   openQuestions: Map<string, string>;
   settledTools: Set<string>;
+  /** Live shell output pollers by tool call ID. */
+  shellPolls?: Map<string, { stopped: boolean }>;
+  /** Token counts of the latest finished step, for `usage.last`. */
+  lastStepTokens?: OpenCodeRecord;
 };
 
 export type SessionState = {
