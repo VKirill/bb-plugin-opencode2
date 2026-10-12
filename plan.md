@@ -1,6 +1,5 @@
 # OpenCode v2 provider — stabilization and full bb feature plan
 
-Status: **Phase 1 done and committed on `main`. Next: Phase 2.**
 Last updated: 2026-10-12. Targets: bb 0.46.0 (Plugin SDK 0.6.37), OpenCode v2.0.27.
 
 ## 0. Resume checklist (read first)
@@ -8,7 +7,7 @@ Last updated: 2026-10-12. Targets: bb 0.46.0 (Plugin SDK 0.6.37), OpenCode v2.0.
 1. Work on `main` and commit after each verified step (user preference; no
    branches).
 2. Phase 1 is committed. Continue with §4 Phase 2, in order.
-3. Live smoke harness: `/tmp/claude-501/smoke/harness.mjs` plays the bb
+3. Live smoke harness (scenarios `s1`–`s7` cover everything verified): `/tmp/claude-501/smoke/harness.mjs` plays the bb
    runtime against `dist/host.js`, and `s1.mjs` is the Phase 1 scenario.
    Run both unsandboxed, because the OpenCode service isn't reachable from
    the sandbox. `cleanup.mjs <dist/host.js> <ws>` removes leftover
@@ -223,123 +222,65 @@ feed back to the model.
   - fork at checkpoint
   - discard with no MCP leak
 
-## 4. Remaining work
+### Phase 2 and 3 (committed, verified live unless noted)
 
-### Phase 2: full bb feature set
+- **Live command output.** Polls `/api/shell/:id/output` and streams it into
+  bb's command row.
+- **File changes from OpenCode's patches.** `metadata.files` drives the rows,
+  with added/modified/deleted kinds. Writes fall back to git, untracked files
+  show as added, and paths are made workspace-relative (including patch
+  headers and symlinked cwds).
+- **Usage and context window.** Uses the cumulative `session.usage.updated`
+  totals and the last step's tokens, plus the model's context limit and a
+  `contextWindow` delta.
+- **Retries.** Scheduled retries show as `provider.error` with
+  `willRetry: true`. Unit-tested only; I never triggered one live.
+- **Turn reconciliation.** Runs after an event-stream reconnect and as a 30 s
+  watchdog. Unit-tested only; a stream drop was not reproduced live.
+- **Health, install, and update** (`host/maintenance.ts`).
+- **bb dynamic tools** render as the bb tool with bb's presentation.
+- **Plan mode.** `/plan` uses the `plan` agent, the mention is stripped, and
+  the next turn switches back to `build`.
+- **Native subagents as delegation rows.** Child-session events are nested
+  through `parentRef`. When subagents are disabled, the deny rule hides the
+  tool.
+- **`turn.diff`.** Built from the turn's patches, because
+  `/api/session/:id/diff` stays `[]` without snapshots.
+- **Repeated tool results are ignored.**
+- **Earlier work no longer ends a new turn.** Terminal execution events now
+  wait for `session.inbox.delivered` of this turn's prompt. This fixed the
+  turn after `/compact` ending instantly.
+- **Settings page.** Per-host OpenCode status, collapsible provider groups,
+  a default-model badge, and "Allow OpenCode subagents". A host RPC
+  `getStatus` and a server RPC `getStatus` back it.
+- **Docs.** README rewritten; added `skills/opencode2-provider/SKILL.md`.
+- **Also verified live:** steering (`input.accepted`, steer honored), stop,
+  in-place rewind (model forgets the dropped turns), `/compact` followed by a
+  normal turn, rename, fork, discard with no MCP leak.
+- **Plugin reloaded** in the user's bb. The `getStatus` and `listModels` RPCs
+  were checked through the real server.
 
-1. **Live shell output.**
-   - On `session.tool.progress` with `metadata.shellID`, map
-     shellID→toolCallId and poll
-     `GET /api/shell/:id/output?location[directory]=<cwd>&cursor=<n>` every
-     ~400 ms.
-   - Emit `item.outputDelta {channel:"command", key: itemKey(callId,"tool")}`.
-   - Stop on `shell.exited`, `session.tool.success/failed`, or turn end, and
-     abort with `active.abortController`.
-   - Bound each delta with `boundedTimelineText`.
-2. **File-change rows from metadata.**
-   - On edit/write success, use `metadata.files[]` patches when present:
-     `kind` = add/update/delete from `status`, `diff` = patch.
-   - For `write` with no metadata, fall back to `git diff`, and for an
-     untracked file use `kind:"add"` with `newText`.
-   - Drop the whole-file `git diff` as the primary path.
-3. **Usage and context.**
-   - Set `usage.total` from `session.usage.updated` (cumulative) and
-     `usage.last` from `step.ended`/`step.failed` tokens.
-   - Set `modelContextWindow` from `session.contextWindow`.
-   - Emit `contextWindow {used: last input+cacheRead+cacheWrite+output, size, estimated:false, attach:"currentOrLast"}`.
-   - Persist usage to the session registry as today.
-4. **Retries and errors.**
-   - `session.retry.scheduled` → `provider.error {message, willRetry:true, category?}`.
-     Also check `providerErrorCategorySchema` for a rate-limit category.
-   - `session.step.failed` → record usage and keep the error for the
-     boundary.
-   - `session.execution.interrupted` with reason `inactivity` or `shutdown`
-     → `provider.warning`.
-5. **Native subagents as delegation rows** (when "disable subagents" is off).
-   - Change the `subagent` tool row to an item
-     `{type:"delegation", childRef:<childSessionID>, label: description, background:false}`.
-     Open it on `tool.progress` when `metadata.sessionID` appears, and close
-     it with a summary from the result content.
-   - Register child→parent in a `childSessions` map and route child-session
-     events through the router with a `parentRef = childRef` on item keys and
-     `turn.open`.
-   - Child permission and question asks go to the parent bb thread.
-   - Read the bb delegation docs/types (`deltaDelegationShapeSchema`,
-     `parentRef`) before implementing.
-6. **Turn diff.**
-   - At turn end, `GET /api/session/:id/diff?from=<checkpointId>` and emit
-     `turn.diff {diff: concatenated patches}` when non-empty.
-   - Otherwise build it from the edit metadata collected during the turn.
-7. **Plan mode.**
-   - In server.ts, set `composerActions: ["plan"]` and `strings.planModeCopy`.
-   - In the bridge, `ensureSessionAgent(session, options.promptMode === "plan" ? "plan" : (session.agent === "plan" ? "build" : undefined))`
-     via `POST /api/session/:id/agent {agent}`.
-   - Check how bb's plan command mention arrives in the input
-     (`resolveProviderPlanCommand`) and whether it must be stripped from the
-     prompt text (see `removeCommandMentionsFromPromptInput`).
-8. **Health, install, and update.** Create a new `host/maintenance.ts`:
-   - `not_installed` when the binary is missing or the provider is disabled.
-   - `unsupported_version` below `MIN_OPENCODE_VERSION = "2.0.26"`.
-   - `unauthenticated` with `loginCommand: "opencode2 auth login"` when the
-     catalog has no models.
-   - `unknown` with a message when the service fails to start.
-   - `canUpdate` when `npmLatestVersion("@opencode/cli")` is greater than the
-     installed version (cache it).
-   - `provider/installation/status|run`:
-     - Install uses `npmGlobalInstallCommand("@opencode/cli")`.
-     - Update uses `{command:"opencode2", args:["upgrade"], displayCommand:"opencode2 upgrade"}`.
-       That works for bun, npm, brew, or curl installs.
-     - Verification uses `installationVerification`.
-   - Set `maintenance.installation: true` in server.ts, and register the
-     schemas in `PARAM_SCHEMAS`.
-9. **Event-stream recovery.**
-   - On SSE reconnect, and on `location.shutdown`/`global.disposed`, check
-     every session with an active turn against `GET /api/session/active`.
-   - If a session is no longer active, read `GET /api/session/:id` for
-     `outcome` (or the last `idle` message) and `finish()` with the matching
-     status.
-   - Add a watchdog: if no events arrive for an active turn for N minutes,
-     reconcile.
-   - Optionally replay with `/api/experimental/session/:id/log`.
-10. **Steer confirmation.** Optionally emit `input.accepted` on
-    `session.inbox.delivered` instead of on the prompt POST.
-11. **Dynamic tool presentation.**
-    - Recognize calls to the bb MCP server (tool name prefixed with the
-      server name) and render them with the `DynamicTool.presentation` bb
-      supplied. Fall back to `experimental_toolPresentation`.
-    - Strip the server prefix from the label.
-12. **Native skill roots** (optional).
-    - `experimental_nativeSkillRoots` for `~/.config/opencode/skills` and
-      `.opencode/skills`, or `experimental_resolvesNativeRoots` backed by
-      `GET /api/skill`, so bb typeahead lists OpenCode skills.
-13. **Unknown events.** For an active session, forward them as `provider/raw`
-    or `unhandled {vouchedTurn:false}` at a low rate, for diagnostics.
+Dropped at the user's request: a fake OpenCode server fixture or SDK
+conformance run against it. Coverage comes from unit tests plus the live
+harness instead.
 
-### Phase 3: tests, docs, release
+## 4. Remaining work (optional)
 
-1. **Fake OpenCode server fixture.** A Node HTTP server that implements the
-   routes in §2 and replays scripted event sequences derived from the
-   recordings.
-   - Add an env override (for example `OPENCODE2_SERVER_URL` and
-     `OPENCODE2_SERVER_PASSWORD`) that `OpenCodeServer.connect` honors
-     instead of running `opencode2 service start`.
-   - Add it to `env.passthrough` only if it's needed outside tests.
-2. **Conformance.** Add `provider-bridge.conformance.test.ts` using
-   `experimental_runBridgeConformance` with
-   `experimental_captureBridgeJsonRpcOutput`, driven against the fake server.
-   Also add a stream test that asserts the assembled rows (command with live
-   output and exit code, fileChange from a patch, delegation, usage and
-   context).
-3. **Recorded replay** (optional). Run the bb daemon with
-   `BB_PROVIDER_BRIDGE_RECORD_DIR`, commit the lanes, and add a parity test.
-4. **README.** Rewrite the feature tables. Document permission-mode mapping,
-   plan mode, install and update, the minimum OpenCode version, and the
-   unsupported list in §1.
-5. **Plugin skill.** Add `skills/opencode2-provider/SKILL.md`, as the
-   plugin-authoring rules require, covering settings, constraints, and
-   troubleshooting.
-6. **Ship.** Run `bb plugin build`, then `bb plugin reload opencode2`, then a
-   manual run in the bb UI covering every row of the feature table.
+1. **Manual end-to-end check in the bb UI.** I haven't looked at any of this
+   in bb's interface yet. The user should check: an approval prompt in
+   accept-edits, the question tool's native UI, a delegation row, the live
+   command output, and the new settings page. I didn't create bb threads
+   myself, because the user didn't ask me to.
+2. **Native skill roots.** `experimental_nativeSkillRoots` or
+   `experimental_resolvesNativeRoots` backed by `GET /api/skill`, so bb's
+   typeahead lists OpenCode skills.
+3. **Diagnostics.** Forward unknown OpenCode events for an active session as
+   `unhandled` deltas, rate-limited.
+4. **Child-session questions.** A subagent's question closes without its
+   `parentRef` (the question handler emits the close). This is cosmetic and
+   rare.
+5. **Replay test** (`BB_PROVIDER_BRIDGE_RECORD_DIR` and the parity kit), if
+   regressions show up.
 
 ## 5. Decisions taken
 
