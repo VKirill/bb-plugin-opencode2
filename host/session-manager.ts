@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ModelSettings } from "../settings-contract.ts";
 import { dynamicToolCallRouter } from "./bridge-runtime.ts";
@@ -17,6 +16,7 @@ import {
 } from "./models.ts";
 import {
   dynamicMcpRegistrationRequest,
+  dynamicMcpServerName,
   dynamicMcpRemovalRequest,
   resolveBbBinDir,
   sessionEnvironmentRequest,
@@ -40,10 +40,6 @@ import {
 } from "./types.ts";
 
 type RecordValue = OpenCodeRecord;
-
-export function dynamicMcpServerName(providerThreadId: string) {
-  return `bb_opencode2_${createHash("sha256").update(providerThreadId).digest("hex").slice(0, 20)}`;
-}
 
 export function sessionFromParams(
   params: RecordValue,

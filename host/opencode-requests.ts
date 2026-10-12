@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { delimiter, dirname } from "node:path";
 import {
   experimental_resolveExecutablePath as resolveExecutablePath,
@@ -17,6 +18,11 @@ const BB_INSTRUCTIONS_ENTRY = "bb.provider.instructions";
  */
 export function locationQuery(cwd: string) {
   return `location[directory]=${encodeURIComponent(cwd)}`;
+}
+
+/** Per-session name of the MCP server that exposes BB dynamic tools. */
+export function dynamicMcpServerName(providerThreadId: string) {
+  return `bb_opencode2_${createHash("sha256").update(providerThreadId).digest("hex").slice(0, 20)}`;
 }
 
 /** OpenCode v2 adds and removes runtime MCP servers under `experimental`. */

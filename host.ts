@@ -74,6 +74,7 @@ export {
   timelineDeltasForEmission,
 } from "./host/timeline.ts";
 export {
+  dynamicToolRow,
   metadataFileChanges,
   toolRow,
   touchedPaths,

@@ -10,6 +10,7 @@ import {
   experimental_toolPresentation as toolPresentation,
   experimental_webFetchPresentation as webFetchPresentation,
   experimental_webSearchPresentation as webSearchPresentation,
+  type DynamicTool,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import {
   firstInputString,
@@ -226,6 +227,36 @@ export function touchedPaths(name: string, rawInput: unknown): string[] {
     );
   }
   return [];
+}
+
+/**
+ * OpenCode names MCP tools `<server>_<tool>`. Calls to the per-session BB
+ * tool server render as the BB tool, with the presentation BB supplied.
+ */
+export function dynamicToolRow(
+  serverName: string,
+  tools: readonly DynamicTool[],
+  name: string,
+  rawInput: unknown,
+) {
+  const prefix = `${serverName}_`;
+  if (!name.startsWith(prefix)) return undefined;
+  const toolName = name.slice(prefix.length);
+  const tool = tools.find((candidate) => candidate.name === toolName);
+  const input = inputRecord(rawInput);
+  const fallbackTitle = presentationTitle(
+    Object.values(input).find(
+      (value): value is string =>
+        typeof value === "string" && value.trim().length > 0,
+    ) ?? "",
+  );
+  return {
+    item: { type: "tool", tool: toolName, args: input },
+    presentation: tool?.presentation ?? {
+      ...toolPresentation(toolName),
+      ...(fallbackTitle ? { title: fallbackTitle } : {}),
+    },
+  };
 }
 
 export function toolRow(name: string, rawInput: unknown, cwd: string) {

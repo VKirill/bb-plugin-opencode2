@@ -2,7 +2,7 @@ import { experimental_COMPACTION_PRESENTATION as compactionPresentation } from "
 import { dynamicToolCallRouter, emit } from "./bridge-runtime.ts";
 import { OpenCodeInteractions } from "./opencode-interactions.ts";
 import { toolFailureError } from "./prompt.ts";
-import { locationQuery } from "./opencode-requests.ts";
+import { dynamicMcpServerName, locationQuery } from "./opencode-requests.ts";
 import {
   boundedTimelineText,
   itemKey,
@@ -12,6 +12,7 @@ import {
 } from "./timeline.ts";
 import {
   contentText,
+  dynamicToolRow,
   gitDiff,
   gitDiffNewFile,
   metadataFileChanges,
@@ -50,6 +51,19 @@ export function shellExitCode(data: RecordValue): number | undefined {
     if (typeof value === "number" && Number.isInteger(value)) return value;
   const match = contentText(data.content).match(/Exited with code (-?\d+)/);
   return match ? Number(match[1]) : undefined;
+}
+
+function sessionToolRow(session: SessionState, name: string, input: unknown) {
+  return (
+    (session.dynamicTools.length > 0
+      ? dynamicToolRow(
+          dynamicMcpServerName(session.providerThreadId),
+          session.dynamicTools,
+          name,
+          input,
+        )
+      : undefined) ?? toolRow(name, input, session.cwd)
+  );
 }
 
 function tokenCount(value: unknown) {
@@ -307,7 +321,7 @@ export class OpenCodeEventRouter {
         const input = inputRecord(
           data.input ?? parseInputText(active.pendingInput.get(eventId)),
         );
-        const row = toolRow(name, input, session.cwd);
+        const row = sessionToolRow(session, name, input);
         active.opened.set(eventId, row.item);
         const touched = touchedPaths(name, input);
         if (touched.length) active.touchedFiles.set(eventId, touched);
@@ -362,7 +376,7 @@ export class OpenCodeEventRouter {
       );
       let item = active.opened.get(eventId);
       if (!item) {
-        const row = toolRow(name, input, session.cwd);
+        const row = sessionToolRow(session, name, input);
         item = row.item;
         active.opened.set(eventId, item);
         const touched = touchedPaths(name, input);

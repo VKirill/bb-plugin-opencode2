@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  dynamicToolRow,
   forkBoundaryRetainingThrough,
   mapModel,
   metadataFileChanges,
@@ -199,4 +200,42 @@ test("reports touched files relative to the workspace", () => {
   assert.equal(workspacePath("/repo", "/repo/src/a.ts"), "src/a.ts");
   assert.equal(workspacePath("/repo", "src/a.ts"), "src/a.ts");
   assert.equal(workspacePath("/repo", "/elsewhere/b.ts"), "/elsewhere/b.ts");
+});
+
+test("renders BB dynamic tool calls as the BB tool", () => {
+  const presentation = {
+    icon: { glyph: "Globe" },
+    label: { pending: "Opening page", completed: "Opened page" },
+  };
+  const tools = [
+    {
+      name: "browser_open",
+      description: "Open a page",
+      inputSchema: {},
+      presentation,
+    },
+    { name: "bb_echo", description: "Echo", inputSchema: {} },
+  ];
+  const row = dynamicToolRow(
+    "bb_opencode2_abc",
+    tools,
+    "bb_opencode2_abc_browser_open",
+    {
+      url: "https://example.com",
+    },
+  );
+  assert.equal(row?.item.tool, "browser_open");
+  assert.deepEqual(row?.presentation, presentation);
+  const echo = dynamicToolRow(
+    "bb_opencode2_abc",
+    tools,
+    "bb_opencode2_abc_bb_echo",
+    { text: "ping" },
+  );
+  assert.equal(echo?.item.tool, "bb_echo");
+  assert.equal(echo?.presentation.title, "ping");
+  assert.equal(
+    dynamicToolRow("bb_opencode2_abc", tools, "shell", {}),
+    undefined,
+  );
 });
