@@ -3,7 +3,11 @@ import {
   experimental_presentationTitle as presentationTitle,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { emit, requestRuntime } from "./bridge-runtime.ts";
-import { approvalPermissionReply, automaticPermissionReply } from "./prompt.ts";
+import {
+  approvalPermissionReply,
+  automaticPermissionReply,
+  permissionReplyBody,
+} from "./prompt.ts";
 import { itemKey } from "./timeline.ts";
 import {
   errorMessage,
@@ -89,11 +93,14 @@ export class OpenCodeInteractions {
   private async replyPermission(
     sessionId: string,
     requestId: string,
-    reply: OpenCodePermissionReply,
+    decision: OpenCodePermissionReply,
   ) {
     await this.request(
       `/api/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(requestId)}/reply`,
-      { method: "POST", body: JSON.stringify({ reply }) },
+      {
+        method: "POST",
+        body: JSON.stringify(permissionReplyBody(decision)),
+      },
     );
   }
 
@@ -124,8 +131,8 @@ export class OpenCodeInteractions {
 
   async cancelQuestionForm(session: SessionState, formId: string) {
     await this.request(
-      `/api/session/${encodeURIComponent(session.providerThreadId)}/form/${encodeURIComponent(formId)}/cancel`,
-      { method: "POST", body: "{}" },
+      `/api/session/${encodeURIComponent(session.providerThreadId)}/form/${encodeURIComponent(formId)}`,
+      { method: "DELETE" },
     ).catch(() => {});
   }
 

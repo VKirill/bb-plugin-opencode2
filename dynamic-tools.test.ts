@@ -55,7 +55,7 @@ test("filters disallowed BB dynamic tools", () => {
   );
 });
 
-test("uses OpenCode beta's exact local-MCP registration request", () => {
+test("registers the local MCP bridge on OpenCode v2's experimental route", () => {
   const config = {
     type: "local",
     command: ["node", "bridge.mjs"],
@@ -68,7 +68,7 @@ test("uses OpenCode beta's exact local-MCP registration request", () => {
       config,
     ),
     {
-      path: "/api/mcp/bb%20opencode2%2Ftest?location[directory]=%2Frepo%20with%20spaces",
+      path: "/api/experimental/mcp/bb%20opencode2%2Ftest?location[directory]=%2Frepo%20with%20spaces",
       init: { method: "PUT", body: JSON.stringify({ config }) },
     },
   );
@@ -99,14 +99,18 @@ test("uses the documented session-instructions entry instead of unsupported prom
   assert.deepEqual(
     sessionInstructionsRequest("ses_123", "Use the repository conventions."),
     {
-      path: "/api/session/ses_123/instructions/entries/bb.provider.instructions",
+      path: "/api/experimental/session/ses_123/instructions/entries/bb.provider.instructions",
       init: {
         method: "PUT",
         body: JSON.stringify({ value: "Use the repository conventions." }),
       },
     },
   );
-  assert.equal(sessionInstructionsRequest("ses_123", ""), undefined);
+  // Empty instructions remove a stale entry instead of leaving it behind.
+  assert.deepEqual(sessionInstructionsRequest("ses_123", ""), {
+    path: "/api/experimental/session/ses_123/instructions/entries/bb.provider.instructions",
+    init: { method: "DELETE" },
+  });
 });
 
 test("builds a codex-style session environment with bb on PATH", () => {

@@ -35,6 +35,8 @@ export type SessionState = {
   providerThreadId: string;
   cwd: string;
   permissionMode?: OpenCodePermissionMode;
+  /** Serialized ruleset last sent to OpenCode, to skip redundant PATCHes. */
+  appliedPermissions?: string;
   disableSubagents: boolean;
   nativeSkillNames?: Set<string>;
   dynamicTools: DynamicTool[];
@@ -46,6 +48,10 @@ export type SessionState = {
   dynamicToolProxy?: DynamicToolsMcpProxy;
   active?: ActiveTurn;
   model?: ModelRef;
+  /** The current model's context limit, from OpenCode's model catalog. */
+  contextWindow?: number | null;
+  /** OpenCode agent BB last selected; `plan` while BB plan mode is on. */
+  agent?: string;
   usage: {
     input: number;
     output: number;

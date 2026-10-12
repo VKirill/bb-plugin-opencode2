@@ -8,9 +8,12 @@ import {
 } from "./dynamic-tools-mcp.ts";
 import {
   assertModelEnabled,
+  modelId,
   modelRefFromOptions,
   modelSwitchRequest,
+  resolveModelVariant,
   sameModelRef,
+  turnModelRef,
 } from "./models.ts";
 import {
   dynamicMcpRegistrationRequest,
@@ -19,11 +22,14 @@ import {
   sessionEnvironmentRequest,
   sessionEnvironmentVariables,
   sessionInstructionsRequest,
+  sessionPermissionRules,
+  sessionPermissionsRequest,
 } from "./opencode-requests.ts";
 import { openCodeServer } from "./opencode-server.ts";
 import { enabledDynamicTools, sameDynamicTools } from "./prompt.ts";
 import {
   errorMessage,
+  inputRecord,
   parsePermissionMode,
   stringValue,
   sessions,
@@ -35,7 +41,7 @@ import {
 
 type RecordValue = OpenCodeRecord;
 
-function dynamicMcpServerName(providerThreadId: string) {
+export function dynamicMcpServerName(providerThreadId: string) {
   return `bb_opencode2_${createHash("sha256").update(providerThreadId).digest("hex").slice(0, 20)}`;
 }
 
@@ -180,10 +186,40 @@ async function installSessionInstructions(session: SessionState) {
     session.providerThreadId,
     session.instructions,
   );
-  // Do not delete on empty input: a newly-created session has no provider
-  // entry, and the documented endpoint reports that absence as a 404.
-  if (!request) return;
+  try {
+    await openCodeServer.request(request.path, request.init);
+  } catch (error) {
+    // Removing an entry a new session never had reports a 404.
+    if (request.init.method !== "DELETE") throw error;
+  }
+}
+
+/**
+ * Keep OpenCode's session ruleset in step with BB's permission mode. BB can
+ * change the mode per turn, so callers pass the turn's mode; an unchanged
+ * ruleset is not re-sent.
+ */
+export async function ensureSessionPermissions(
+  session: SessionState,
+  permissionMode = session.permissionMode,
+) {
+  const rules = sessionPermissionRules({
+    permissionMode,
+    disableSubagents: session.disableSubagents,
+    dynamicToolServer:
+      session.dynamicTools.length > 0
+        ? dynamicMcpServerName(session.providerThreadId)
+        : undefined,
+  });
+  const key = JSON.stringify(rules);
+  if (session.appliedPermissions === key) {
+    session.permissionMode = permissionMode;
+    return;
+  }
+  const request = sessionPermissionsRequest(session.providerThreadId, rules);
   await openCodeServer.request(request.path, request.init);
+  session.permissionMode = permissionMode;
+  session.appliedPermissions = key;
 }
 
 async function installSessionEnvironment(session: SessionState) {
@@ -237,6 +273,7 @@ export async function registerSession(session: SessionState) {
   if (reusableProxy) session.dynamicToolProxy = reusableProxy;
   try {
     await installSessionInstructions(session);
+    await ensureSessionPermissions(session);
     if (!reusableProxy) await installDynamicTools(session);
   } catch (error) {
     sessions.delete(session.bbThreadId);
@@ -285,10 +322,14 @@ export async function ensureSessionModel(
 ) {
   if (!desired) return;
   assertModelEnabled(desired, session.enabledModels);
-  if (!force && sameModelRef(session.model, desired)) return;
-  const request = modelSwitchRequest(session.providerThreadId, desired);
+  const entry = await openCodeServer.lookupModel(session.cwd, modelId(desired));
+  if (entry) session.contextWindow = entry.contextWindow;
+  // BB levels the model lacks are not sent; compare what OpenCode receives.
+  const resolved = resolveModelVariant(desired, entry);
+  if (!force && sameModelRef(session.model, resolved)) return;
+  const request = modelSwitchRequest(session.providerThreadId, resolved);
   await openCodeServer.request(request.path, request.init);
-  session.model = desired;
+  session.model = resolved;
 }
 
 export async function shutdownSessions(reason: string): Promise<void> {
@@ -327,4 +368,50 @@ export async function shutdownSessions(reason: string): Promise<void> {
   if (removedIds.length > 0) {
     await openCodeServer.forgetMcpRegistrations(removedIds);
   }
+}
+
+/**
+ * Switch the OpenCode agent. BB plan mode selects OpenCode's read-only
+ * `plan` agent; leaving plan mode restores `build`. Any other agent the user
+ * chose in OpenCode is left alone.
+ */
+export async function ensureSessionAgent(
+  session: SessionState,
+  promptMode: unknown,
+) {
+  const desired =
+    promptMode === "plan"
+      ? "plan"
+      : session.agent === "plan"
+        ? "build"
+        : undefined;
+  if (!desired || session.agent === desired) return;
+  await openCodeServer.request(
+    `/api/session/${encodeURIComponent(session.providerThreadId)}/agent`,
+    { method: "POST", body: JSON.stringify({ agent: desired }) },
+  );
+  session.agent = desired;
+}
+
+/**
+ * Bring the OpenCode session in line with this turn's BB options before
+ * prompting: plugin settings, permission mode, plan mode, and model.
+ */
+export async function prepareTurn(session: SessionState, options: unknown) {
+  const opts = inputRecord(options);
+  const settings = await openCodeServer.readModelSettings(opts.providerOptions);
+  if (!settings.providerEnabled)
+    throw new Error("OpenCode provider is disabled");
+  session.disableSubagents =
+    settings.disableSubagents !== false ||
+    session.disallowedTools.has("task") ||
+    session.disallowedTools.has("subagent");
+  session.enabledModels =
+    settings.enabledModels === null ? null : new Set(settings.enabledModels);
+  await ensureSessionPermissions(
+    session,
+    parsePermissionMode(opts.permissionMode) ?? session.permissionMode,
+  );
+  await ensureSessionAgent(session, opts.promptMode);
+  await ensureSessionModel(session, turnModelRef(session, options));
 }

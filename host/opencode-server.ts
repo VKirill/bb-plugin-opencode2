@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { withoutBridgeRuntimeEnv } from "@get-bb/plugin-sdk/provider-bridge";
 import {
@@ -9,8 +9,10 @@ import {
   normalizeModelSettings,
 } from "../model-settings.ts";
 import type { ModelSettings } from "../settings-contract.ts";
+import { modelCatalogEntry, type ModelCatalogEntry } from "./models.ts";
 import {
   forkBoundaryRetainingThrough,
+  locationQuery,
   revertTargetRetainingThrough,
   type CheckpointMessage,
 } from "./opencode-requests.ts";
@@ -29,6 +31,14 @@ type RecordValue = OpenCodeRecord;
 const SETTINGS_FILE = "opencode2-model-settings.json";
 const MCP_REGISTRY_FILE = "opencode2-mcp-registry.json";
 const SESSION_REGISTRY_FILE = "opencode2-session-registry.json";
+
+const MODEL_CATALOG_TTL_MS = 60_000;
+
+export type OpenCodeModelCatalog = {
+  models: RecordValue[];
+  defaultId?: string;
+  entries: Map<string, ModelCatalogEntry>;
+};
 
 export type McpBridgeRegistration = { serverName: string; cwd: string };
 
@@ -91,15 +101,29 @@ export class OpenCodeServer {
     return this.dataDir ? join(this.dataDir, SETTINGS_FILE) : undefined;
   }
 
-  async readModelSettings(): Promise<ModelSettings> {
-    const path = this.settingsPath();
-    if (!path) return DEFAULT_MODEL_SETTINGS;
-    try {
-      const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-      return normalizeModelSettings(parsed);
-    } catch {
-      return DEFAULT_MODEL_SETTINGS;
+  /**
+   * Plugin settings reach session and turn commands as `providerOptions`
+   * (see `deriveProviderOptions` in server.ts), which is always current.
+   * Sessionless maintenance requests (`model/list`, `provider/health`) carry
+   * only static options, so they read the copy the host RPC worker keeps in
+   * its own data directory, a sibling of the bridge's.
+   */
+  async readModelSettings(providerOptions?: unknown): Promise<ModelSettings> {
+    const derived = inputRecord(providerOptions).modelSettings;
+    if (derived !== undefined) return normalizeModelSettings(derived);
+    if (!this.dataDir) return DEFAULT_MODEL_SETTINGS;
+    for (const path of [
+      join(this.dataDir, SETTINGS_FILE),
+      join(dirname(this.dataDir), "host-data", SETTINGS_FILE),
+    ]) {
+      try {
+        const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+        return normalizeModelSettings(parsed);
+      } catch {
+        // Try the next location.
+      }
     }
+    return DEFAULT_MODEL_SETTINGS;
   }
 
   async writeModelSettings(settings: ModelSettings) {
@@ -414,11 +438,75 @@ export class OpenCodeServer {
     return inputRecord(await response.json());
   }
 
+  private modelCatalogs = new Map<
+    string,
+    { at: number; result: Promise<OpenCodeModelCatalog> }
+  >();
+
+  /**
+   * OpenCode's models and default model for a workspace. Cached briefly so a
+   * turn's model switch can resolve variants and context limits without
+   * re-listing hundreds of models.
+   */
+  async modelCatalog(
+    cwd: string,
+    fresh = false,
+  ): Promise<OpenCodeModelCatalog> {
+    const cached = this.modelCatalogs.get(cwd);
+    if (!fresh && cached && Date.now() - cached.at < MODEL_CATALOG_TTL_MS)
+      return cached.result;
+    const result = (async () => {
+      const query = locationQuery(cwd);
+      const [list, fallback] = await Promise.all([
+        this.request(`/api/model?${query}`),
+        this.request(`/api/model/default?${query}`).catch(() => ({})),
+      ]);
+      const models = (Array.isArray(list.data) ? list.data : [])
+        .map(inputRecord)
+        .filter(
+          (model) =>
+            model.enabled !== false &&
+            stringValue(model.providerID) !== undefined &&
+            stringValue(model.id) !== undefined,
+        );
+      const defaultModel = inputRecord(inputRecord(fallback).data);
+      const defaultId =
+        stringValue(defaultModel.providerID) && stringValue(defaultModel.id)
+          ? `${defaultModel.providerID}/${defaultModel.id}`
+          : undefined;
+      return {
+        models,
+        defaultId,
+        entries: new Map(
+          models.map((model) => {
+            const entry = modelCatalogEntry(model);
+            return [entry.id, entry] as const;
+          }),
+        ),
+      };
+    })();
+    this.modelCatalogs.set(cwd, { at: Date.now(), result });
+    result.catch(() => {
+      if (this.modelCatalogs.get(cwd)?.result === result)
+        this.modelCatalogs.delete(cwd);
+    });
+    return result;
+  }
+
+  async lookupModel(
+    cwd: string,
+    id: string,
+  ): Promise<ModelCatalogEntry | undefined> {
+    try {
+      return (await this.modelCatalog(cwd)).entries.get(id);
+    } catch {
+      return undefined;
+    }
+  }
+
   async nativeSkillNames(cwd: string) {
     try {
-      const result = await this.request(
-        `/api/skill?location[directory]=${encodeURIComponent(cwd)}`,
-      );
+      const result = await this.request(`/api/skill?${locationQuery(cwd)}`);
       return new Set<string>(
         (Array.isArray(result.data) ? result.data : [])
           .map((value: unknown) => {
@@ -448,6 +536,8 @@ export class OpenCodeServer {
         `/api/session/${encodeURIComponent(sessionId)}/message?${query}`,
       );
       const pageMessages = Array.isArray(result.data) ? result.data : [];
+      // OpenCode always returns a `next` cursor; an empty page is the end.
+      if (pageMessages.length === 0) break;
       for (const msg of pageMessages) {
         const record = inputRecord(msg);
         const id = stringValue(record.id);
@@ -466,7 +556,7 @@ export class OpenCodeServer {
   }
 
   async forkBoundaryRetainingThrough(sessionId: string, checkpointId?: string) {
-    if (!checkpointId) return { type: "through" } as const;
+    if (!checkpointId) return {};
     const messages = await this.listSessionMessageIds(sessionId);
     if (!messages.some((entry) => entry.id === checkpointId)) {
       throw new Error(`OpenCode checkpoint not found: ${checkpointId}`);
@@ -486,8 +576,10 @@ export class OpenCodeServer {
     const target = revertTargetRetainingThrough(messages, checkpointId);
     if (target === undefined) {
       await this.request(
-        `/api/session/${encodeURIComponent(sessionId)}/revert/clear`,
-        { method: "POST" },
+        `/api/session/${encodeURIComponent(sessionId)}/revert`,
+        {
+          method: "DELETE",
+        },
       ).catch(() => {});
       return;
     }

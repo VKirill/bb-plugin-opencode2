@@ -38,6 +38,20 @@ export function approvalPermissionReply(
       : "reject";
 }
 
+export const PERMISSION_DENIED_MESSAGE =
+  "The user denied this request in BB. Do not retry it; continue without it or ask the user how to proceed.";
+
+/**
+ * `POST .../permission/{id}/reply` body. A bare reject makes OpenCode abort
+ * the whole step; a reject with a message is returned to the model as the
+ * tool result so the agent can continue, matching BB's deny semantics.
+ */
+export function permissionReplyBody(decision: OpenCodePermissionReply) {
+  return decision === "reject"
+    ? { decision, message: PERMISSION_DENIED_MESSAGE }
+    : { decision };
+}
+
 export const SUBAGENT_DISABLED_TOOL_ERROR =
   "[bb] Native subagents (task tool) are disabled in this BB thread. Do all work directly in this session with your other tools instead of delegating.";
 

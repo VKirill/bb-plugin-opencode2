@@ -131,6 +131,8 @@ export default async function plugin(bb: BbPluginApi) {
       installUrl: "https://opencode.ai/v2/docs/",
       brandPrefix: "OpenCode ",
       iconTint: { light: "#18181B", dark: "#FAFAFA" },
+      planModeCopy:
+        "OpenCode's read-only plan agent will explore and plan without editing files.",
     },
     // Only show the provider when `opencode2` is installed on the target machine.
     experimental_visibility: "installed",
@@ -154,7 +156,10 @@ export default async function plugin(bb: BbPluginApi) {
         "ultra",
       ],
     },
-    composerActions: [],
+    composerActions: ["plan"],
+    // Settings reach every session and turn command as providerOptions, so a
+    // change applies on the next turn without waiting for the host sync.
+    deriveProviderOptions: () => ({ modelSettings }),
   });
 
   bb.log.info("registered OpenCode v2 provider");

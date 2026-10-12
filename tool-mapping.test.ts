@@ -345,18 +345,12 @@ test("retains through a checkpoint by acting on the following turn", () => {
   assert.equal(nextMessageIdAfterCheckpoint(ids, "msg_4"), undefined);
   assert.equal(nextMessageIdAfterCheckpoint(ids, "msg_missing"), undefined);
   assert.deepEqual(forkBoundaryRetainingThrough(ids, "msg_1"), {
-    type: "before",
-    messageID: "msg_2",
+    before: "msg_2",
   });
-  assert.deepEqual(forkBoundaryRetainingThrough(ids, "msg_4"), {
-    type: "through",
-  });
-  assert.deepEqual(forkBoundaryRetainingThrough(ids, undefined), {
-    type: "through",
-  });
+  assert.deepEqual(forkBoundaryRetainingThrough(ids, "msg_4"), {});
+  assert.deepEqual(forkBoundaryRetainingThrough(ids, undefined), {});
   assert.deepEqual(forkBoundaryRetainingThrough(ids, "msg_missing"), {
-    type: "before",
-    messageID: "msg_missing",
+    before: "msg_missing",
   });
   assert.equal(revertTargetRetainingThrough(ids, "msg_1"), "msg_2");
   assert.equal(revertTargetRetainingThrough(ids, "msg_4"), undefined);
@@ -371,13 +365,10 @@ test("retains through a checkpoint by acting on the following turn", () => {
   ];
   assert.equal(nextMessageIdAfterCheckpoint(turnMessages, "msg_u1"), "msg_u2");
   assert.deepEqual(forkBoundaryRetainingThrough(turnMessages, "msg_u1"), {
-    type: "before",
-    messageID: "msg_u2",
+    before: "msg_u2",
   });
   assert.equal(revertTargetRetainingThrough(turnMessages, "msg_u1"), "msg_u2");
-  assert.deepEqual(forkBoundaryRetainingThrough(turnMessages, "msg_u2"), {
-    type: "through",
-  });
+  assert.deepEqual(forkBoundaryRetainingThrough(turnMessages, "msg_u2"), {});
   assert.equal(revertTargetRetainingThrough(turnMessages, "msg_u2"), undefined);
 });
 

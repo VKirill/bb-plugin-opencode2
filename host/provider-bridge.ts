@@ -8,6 +8,7 @@ import {
   initializeParamsSchema,
   modelListParamsSchema,
   ProviderRequestDecodeError,
+  removeCommandMentionsFromPromptInput,
   providerMaintenanceParamsSchema,
   runBridgeRequest,
   skillsConfigureParamsSchema,
@@ -39,16 +40,17 @@ import {
   mapModel,
   modelRefFromOptions,
   sameModelRef,
-  turnModelRef,
 } from "./models.ts";
 import {
   dynamicMcpRemovalRequest,
+  sessionRenameRequest,
   steerAcceptedDelta,
 } from "./opencode-requests.ts";
 import { openCodeServer } from "./opencode-server.ts";
 import { promptBody } from "./prompt.ts";
 import {
   ensureSessionModel,
+  prepareTurn,
   registerSession,
   releaseDynamicTools,
   sessionFromParams,
@@ -90,6 +92,15 @@ const PARAM_SCHEMAS = {
   "turn/steer": turnSteerParamsSchema,
   "skills/configure": skillsConfigureParamsSchema,
 } as const;
+
+// BB plan mode arrives as `options.promptMode` and also leaves the `/plan`
+// mention in the prompt text; OpenCode's plan agent only needs the request.
+function withoutPlanCommand(input: RecordValue[]): RecordValue[] {
+  return removeCommandMentionsFromPromptInput(input as never, {
+    trigger: "/",
+    name: "plan",
+  }) as RecordValue[];
+}
 
 function providerSessionId(response: RecordValue): string {
   const id = stringValue(response.data?.id);
@@ -182,37 +193,37 @@ async function handle(request: RecordValue) {
         sendResult(request.id, { models: [], selectedOnlyModels: [] });
         return;
       }
-      const result = await openCodeServer.request(
-        `/api/model?directory=${encodeURIComponent(cwd)}`,
-      );
-      const models = (Array.isArray(result.data) ? result.data : [])
-        .filter((model: RecordValue) => {
-          if (
-            model.enabled === false ||
-            !stringValue(model.providerID) ||
-            !stringValue(model.id)
-          ) {
-            return false;
-          }
-          const id = `${model.providerID}/${model.id}`;
-          return (
+      const catalog = await openCodeServer.modelCatalog(cwd, true);
+      const models = catalog.models
+        .filter(
+          (model) =>
             settings.enabledModels === null ||
-            settings.enabledModels.includes(id)
-          );
-        })
-        .sort((left: RecordValue, right: RecordValue) =>
+            settings.enabledModels.includes(`${model.providerID}/${model.id}`),
+        )
+        .sort((left, right) =>
           `${left.providerID}/${left.id}`.localeCompare(
             `${right.providerID}/${right.id}`,
           ),
         );
+      // Mark OpenCode's own default; fall back to the first listed model when
+      // the default is unknown or blocked by the allowlist.
+      const defaultId = models.some(
+        (model) => `${model.providerID}/${model.id}` === catalog.defaultId,
+      )
+        ? catalog.defaultId
+        : models[0] && `${models[0].providerID}/${models[0].id}`;
       sendResult(request.id, {
-        models: models.map(mapModel),
+        models: models.map((model) =>
+          mapModel(model, `${model.providerID}/${model.id}` === defaultId),
+        ),
         selectedOnlyModels: [],
       });
       return;
     }
     case "thread/start": {
-      const modelSettings = await openCodeServer.readModelSettings();
+      const modelSettings = await openCodeServer.readModelSettings(
+        params.options?.providerOptions,
+      );
       if (!modelSettings.providerEnabled) {
         throw new Error("OpenCode provider is disabled");
       }
@@ -251,7 +262,9 @@ async function handle(request: RecordValue) {
     }
     case "thread/resume": {
       await openCodeServer.start();
-      const modelSettings = await openCodeServer.readModelSettings();
+      const modelSettings = await openCodeServer.readModelSettings(
+        params.options?.providerOptions,
+      );
       await configureSession(
         params,
         params.providerThreadId,
@@ -319,7 +332,9 @@ async function handle(request: RecordValue) {
           params.sourceProviderThreadId,
           checkpointId,
         );
-        const modelSettings = await openCodeServer.readModelSettings();
+        const modelSettings = await openCodeServer.readModelSettings(
+          params.options?.providerOptions,
+        );
         const rewound = sessionFromParams(
           params,
           params.sourceProviderThreadId,
@@ -364,10 +379,12 @@ async function handle(request: RecordValue) {
       );
       const result = await openCodeServer.request(
         `/api/session/${encodeURIComponent(params.sourceProviderThreadId)}/fork`,
-        { method: "POST", body: JSON.stringify({ boundary }) },
+        { method: "POST", body: JSON.stringify(boundary) },
       );
       const providerThreadId = providerSessionId(result);
-      const modelSettings = await openCodeServer.readModelSettings();
+      const modelSettings = await openCodeServer.readModelSettings(
+        params.options?.providerOptions,
+      );
       try {
         await configureSession(params, providerThreadId, modelSettings, true);
       } catch (error) {
@@ -388,10 +405,13 @@ async function handle(request: RecordValue) {
       return;
     }
     case "thread/name/set":
-      await openCodeServer.request(
-        `/api/session/${encodeURIComponent(params.providerThreadId)}/rename`,
-        { method: "POST", body: JSON.stringify({ title: params.title }) },
-      );
+      {
+        const rename = sessionRenameRequest(
+          params.providerThreadId,
+          params.title,
+        );
+        await openCodeServer.request(rename.path, rename.init);
+      }
       sendResult(request.id, { ok: true });
       return;
     case "turn/start": {
@@ -464,10 +484,9 @@ async function handle(request: RecordValue) {
       // response is slow. The response ID should match; keep the latest.
       const promptId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       active.checkpointId = promptId;
-      const desiredModel = turnModelRef(session, params.options);
       const promptPayload = {
         id: promptId,
-        ...promptBody(params.input, {
+        ...promptBody(withoutPlanCommand(params.input), {
           configuredSkillNames,
           disableSubagents: session.disableSubagents,
           nativeSkillNames: session.nativeSkillNames,
@@ -477,7 +496,7 @@ async function handle(request: RecordValue) {
       };
       void (async () => {
         try {
-          await ensureSessionModel(session, desiredModel);
+          await prepareTurn(session, params.options);
           const result = await openCodeServer.request(
             `/api/session/${encodeURIComponent(session.providerThreadId)}/prompt`,
             { method: "POST", body: JSON.stringify(promptPayload) },
@@ -525,10 +544,7 @@ async function handle(request: RecordValue) {
         ]);
       }
       try {
-        await ensureSessionModel(
-          session,
-          turnModelRef(session, params.options),
-        );
+        await prepareTurn(session, params.options);
         const promptId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
         const result = await openCodeServer.request(
           `/api/session/${encodeURIComponent(session.providerThreadId)}/prompt`,
@@ -536,7 +552,7 @@ async function handle(request: RecordValue) {
             method: "POST",
             body: JSON.stringify({
               id: promptId,
-              ...promptBody(params.input, {
+              ...promptBody(withoutPlanCommand(params.input), {
                 configuredSkillNames,
                 disableSubagents: session.disableSubagents,
                 nativeSkillNames: session.nativeSkillNames,

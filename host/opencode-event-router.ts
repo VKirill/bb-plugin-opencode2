@@ -25,6 +25,19 @@ type RequestOpenCode = (
   init?: RequestInit,
 ) => Promise<RecordValue>;
 
+/**
+ * OpenCode v2 reports a shell tool's exit status as `metadata.exit` on
+ * `session.tool.success` (a non-zero exit is still a "success" event) and
+ * appends "Exited with code N" to the content.
+ */
+export function shellExitCode(data: RecordValue): number | undefined {
+  const candidates = [inputRecord(data.metadata).exit, data.exitCode];
+  for (const value of candidates)
+    if (typeof value === "number" && Number.isInteger(value)) return value;
+  const match = contentText(data.content).match(/Exited with code (-?\d+)/);
+  return match ? Number(match[1]) : undefined;
+}
+
 export class OpenCodeEventRouter {
   private readonly interactions: OpenCodeInteractions;
   private readonly emitTimeline: typeof emit;
@@ -277,10 +290,7 @@ export class OpenCodeEventRouter {
           event.type === "session.tool.success"
             ? output
             : (stringValue(error.message) ?? "OpenCode tool failed");
-        const exitCode =
-          typeof data.exitCode === "number" && Number.isInteger(data.exitCode)
-            ? data.exitCode
-            : undefined;
+        const exitCode = shellExitCode(data);
         item.exitCode =
           event.type === "session.tool.success"
             ? (exitCode ?? 0)
@@ -291,7 +301,11 @@ export class OpenCodeEventRouter {
         {
           kind: "item.close",
           key: itemKey(eventId, "tool"),
-          status: event.type.endsWith("failed") ? "failed" : "completed",
+          status:
+            event.type.endsWith("failed") ||
+            (item.type === "command" && item.exitCode !== 0)
+              ? "failed"
+              : "completed",
           ...(item.type === "tool" && item.result
             ? { resultText: item.result }
             : {}),

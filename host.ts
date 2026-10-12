@@ -5,7 +5,7 @@ import {
 } from "./settings-contract.ts";
 import { openCodeServer } from "./host/opencode-server.ts";
 import { shutdownBridge } from "./host/provider-bridge.ts";
-import { sessions, type OpenCodeRecord } from "./host/types.ts";
+import { sessions } from "./host/types.ts";
 
 export { createDynamicToolCallRouter } from "./host/bridge-runtime.ts";
 export {
@@ -16,6 +16,8 @@ export {
 export {
   assertModelEnabled,
   mapModel,
+  modelCatalogEntry,
+  resolveModelVariant,
   modelRefFromOptions,
   modelSwitchRequest,
   sameModelRef,
@@ -25,7 +27,10 @@ export {
   OpenCodeServer,
   parseOpenCodeServiceUrl,
 } from "./host/opencode-server.ts";
-export { OpenCodeEventRouter } from "./host/opencode-event-router.ts";
+export {
+  OpenCodeEventRouter,
+  shellExitCode,
+} from "./host/opencode-event-router.ts";
 export {
   dynamicMcpRegistrationRequest,
   dynamicMcpRemovalRequest,
@@ -36,12 +41,16 @@ export {
   sessionEnvironmentRequest,
   sessionEnvironmentVariables,
   sessionInstructionsRequest,
+  sessionPermissionRules,
+  sessionPermissionsRequest,
+  sessionRenameRequest,
   steerAcceptedDelta,
 } from "./host/opencode-requests.ts";
 export {
   approvalPermissionReply,
   automaticPermissionReply,
   enabledDynamicTools,
+  permissionReplyBody,
   promptBody,
   sameDynamicTools,
   SUBAGENT_DISABLED_TOOL_ERROR,
@@ -69,30 +78,20 @@ export default experimental_defineHostEntry({
   handlers: {
     async listModels(input, context) {
       openCodeServer.setDataDir(context.experimental_paths.dataDir);
-      const cwd = input.cwd ?? process.cwd();
-      const result = (await openCodeServer.request(
-        `/api/model?directory=${encodeURIComponent(cwd)}`,
-      )) as OpenCodeRecord;
-      const models = (Array.isArray(result.data) ? result.data : []).flatMap(
-        (model: OpenCodeRecord) => {
-          if (
-            model.enabled === false ||
-            typeof model.providerID !== "string" ||
-            typeof model.id !== "string"
-          ) {
-            return [];
-          }
-          const id = `${model.providerID}/${model.id}`;
-          return [
-            modelSummarySchema.parse({
-              id,
-              providerId: model.providerID,
-              displayName: typeof model.name === "string" ? model.name : id,
-            }),
-          ];
-        },
+      const catalog = await openCodeServer.modelCatalog(
+        input.cwd ?? process.cwd(),
+        true,
       );
-      return { models };
+      return {
+        models: catalog.models.map((model) => {
+          const id = `${model.providerID}/${model.id}`;
+          return modelSummarySchema.parse({
+            id,
+            providerId: model.providerID,
+            displayName: typeof model.name === "string" ? model.name : id,
+          });
+        }),
+      };
     },
     async setModelSettings(input, context) {
       openCodeServer.setDataDir(context.experimental_paths.dataDir);

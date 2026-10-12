@@ -11,24 +11,29 @@ type RecordValue = OpenCodeRecord;
 const BB_INSTRUCTIONS_ENTRY = "bb.provider.instructions";
 
 /**
- * OpenCode beta registers a local MCP server at this exact resource. The
- * location query is a deep-object query parameter, not a legacy `directory`
- * string query parameter.
+ * Location-scoped OpenCode resources take a deep-object `location` query
+ * parameter. A legacy `directory` query is silently ignored and resolves the
+ * service's default location instead.
  */
+export function locationQuery(cwd: string) {
+  return `location[directory]=${encodeURIComponent(cwd)}`;
+}
+
+/** OpenCode v2 adds and removes runtime MCP servers under `experimental`. */
 export function dynamicMcpRegistrationRequest(
   serverName: string,
   cwd: string,
   config: RecordValue,
 ) {
   return {
-    path: `/api/mcp/${encodeURIComponent(serverName)}?location[directory]=${encodeURIComponent(cwd)}`,
+    path: `/api/experimental/mcp/${encodeURIComponent(serverName)}?${locationQuery(cwd)}`,
     init: { method: "PUT", body: JSON.stringify({ config }) },
   };
 }
 
 export function dynamicMcpRemovalRequest(serverName: string, cwd: string) {
   return {
-    path: `/api/mcp/${encodeURIComponent(serverName)}?location[directory]=${encodeURIComponent(cwd)}`,
+    path: `/api/experimental/mcp/${encodeURIComponent(serverName)}?${locationQuery(cwd)}`,
     init: { method: "DELETE" },
   };
 }
@@ -36,16 +41,102 @@ export function dynamicMcpRemovalRequest(serverName: string, cwd: string) {
 /**
  * Session instruction entries are the documented beta mechanism for BB
  * instructions. The endpoint has no append/replace selector, so a BB
- * `replace` mode cannot be represented exactly.
+ * `replace` mode cannot be represented exactly. Empty instructions remove
+ * the entry so a resumed session does not keep stale BB guidance.
  */
 export function sessionInstructionsRequest(
   sessionId: string,
   instructions: string,
 ) {
-  if (!instructions) return undefined;
+  const path = `/api/experimental/session/${encodeURIComponent(sessionId)}/instructions/entries/${BB_INSTRUCTIONS_ENTRY}`;
+  if (!instructions) return { path, init: { method: "DELETE" } };
   return {
-    path: `/api/session/${encodeURIComponent(sessionId)}/instructions/entries/${BB_INSTRUCTIONS_ENTRY}`,
+    path,
     init: { method: "PUT", body: JSON.stringify({ value: instructions }) },
+  };
+}
+
+export type PermissionRule = {
+  action: string;
+  resource: string;
+  effect: "allow" | "deny" | "ask";
+};
+
+// OpenCode evaluates the agent ruleset and then the session ruleset, and the
+// last matching rule wins. v2's `build` agent allows every action, so without
+// session rules OpenCode never asks and BB's permission modes do nothing.
+const ACCEPT_EDITS_ALLOWED_ACTIONS = [
+  "read",
+  "list",
+  "grep",
+  "glob",
+  "codesearch",
+  "lsp",
+  "edit",
+  "question",
+  "skill",
+  "todowrite",
+  "todoread",
+];
+
+/**
+ * Translate BB's permission mode into an OpenCode session ruleset.
+ *
+ * - `accept-edits` asks for everything except reads, searches, and edits.
+ * - `auto` and `full` keep the agent's own rules; BB answers any remaining
+ *   ask automatically (see automaticPermissionReply).
+ * - BB dynamic tools are approved by BB itself, so their MCP server is
+ *   always allowed instead of prompting twice.
+ * - Disabled native subagents are denied outright, which OpenCode reports to
+ *   the model as a tool error instead of interrupting the turn.
+ */
+export function sessionPermissionRules(input: {
+  permissionMode?: string;
+  disableSubagents: boolean;
+  dynamicToolServer?: string;
+}): PermissionRule[] {
+  const rules: PermissionRule[] = [];
+  if (input.permissionMode === "accept-edits") {
+    rules.push({ action: "*", resource: "*", effect: "ask" });
+    for (const action of ACCEPT_EDITS_ALLOWED_ACTIONS)
+      rules.push({ action, resource: "*", effect: "allow" });
+    // Keep OpenCode's own secret-file guard after the broad read allow.
+    rules.push(
+      { action: "read", resource: "*.env", effect: "ask" },
+      { action: "read", resource: "*.env.*", effect: "ask" },
+      { action: "read", resource: "*.env.example", effect: "allow" },
+    );
+  } else if (input.permissionMode === "full") {
+    rules.push({ action: "*", resource: "*", effect: "allow" });
+  }
+  if (input.dynamicToolServer)
+    rules.push({
+      action: `${input.dynamicToolServer}*`,
+      resource: "*",
+      effect: "allow",
+    });
+  if (input.disableSubagents)
+    rules.push(
+      { action: "subagent", resource: "*", effect: "deny" },
+      { action: "task", resource: "*", effect: "deny" },
+    );
+  return rules;
+}
+
+export function sessionPermissionsRequest(
+  sessionId: string,
+  permissions: PermissionRule[],
+) {
+  return {
+    path: `/api/session/${encodeURIComponent(sessionId)}`,
+    init: { method: "PATCH", body: JSON.stringify({ permissions }) },
+  };
+}
+
+export function sessionRenameRequest(sessionId: string, title: string) {
+  return {
+    path: `/api/session/${encodeURIComponent(sessionId)}`,
+    init: { method: "PATCH", body: JSON.stringify({ title }) },
   };
 }
 
@@ -159,20 +250,25 @@ export function nextMessageIdAfterCheckpoint(
   return index + 1 < ids.length ? ids[index + 1] : undefined;
 }
 
+/**
+ * Body for `POST /api/session/{id}/fork`. OpenCode copies every message
+ * before `before`, or the whole session when it is omitted. (Unknown keys are
+ * stripped, so a wrong field silently forks the tip.)
+ */
 export function forkBoundaryRetainingThrough(
   messages: readonly CheckpointMessage[] | readonly string[],
   checkpointId?: string,
-) {
-  if (!checkpointId) return { type: "through" } as const;
+): { before?: string } {
+  if (!checkpointId) return {};
   const ids = messageIdList(messages);
   const next = nextMessageIdAfterCheckpoint(messages, checkpointId);
   // Unknown checkpoint: fall back to a before-boundary on the given ID so
   // OpenCode surfaces MessageNotFound instead of silently forking the tip.
   if (next === undefined && !ids.includes(checkpointId)) {
-    return { type: "before", messageID: checkpointId } as const;
+    return { before: checkpointId };
   }
-  if (next === undefined) return { type: "through" } as const;
-  return { type: "before", messageID: next } as const;
+  if (next === undefined) return {};
+  return { before: next };
 }
 
 export function steerAcceptedDelta(
