@@ -488,6 +488,7 @@ async function handle(request: RecordValue) {
       // response is slow. The response ID should match; keep the latest.
       const promptId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       active.checkpointId = promptId;
+      active.promptIds = new Set([promptId]);
       const promptPayload = {
         id: promptId,
         ...promptBody(withoutPlanCommand(params.input), {
@@ -506,7 +507,10 @@ async function handle(request: RecordValue) {
             { method: "POST", body: JSON.stringify(promptPayload) },
           );
           const id = stringValue(result?.data?.id);
-          if (id && session.active === active) active.checkpointId = id;
+          if (id && session.active === active) {
+            active.checkpointId = id;
+            active.promptIds?.add(id);
+          }
           active.promptDelivered = true;
         } catch (error) {
           if (session.active === active) {
@@ -552,6 +556,8 @@ async function handle(request: RecordValue) {
       try {
         await prepareTurn(session, params.options);
         const promptId = `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        // Register before sending: OpenCode may report delivery first.
+        (active.promptIds ??= new Set()).add(promptId);
         const result = await openCodeServer.request(
           `/api/session/${encodeURIComponent(session.providerThreadId)}/prompt`,
           {
@@ -575,6 +581,7 @@ async function handle(request: RecordValue) {
         }
         const id = stringValue(result?.data?.id) ?? promptId;
         active.checkpointId = id;
+        active.promptIds.add(id);
         active.promptDelivered = true;
         emit(session.bbThreadId, [
           steerAcceptedDelta(clientRequestId, active.providerTurnId),

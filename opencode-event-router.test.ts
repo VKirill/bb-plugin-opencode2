@@ -324,3 +324,50 @@ test("emits the turn's file patches as turn.diff before the boundary", async () 
   assert.ok(diffIndex >= 0 && diffIndex < kinds.indexOf("turn.boundary"));
   assert.equal(emitted[diffIndex].diff, patch);
 });
+
+test("ignores terminal events from earlier work until the turn's prompt is delivered", async () => {
+  const emitted: OpenCodeRecord[] = [];
+  const active = {
+    providerTurnId: "turn-2",
+    startedAt: Date.now(),
+    abortController: new AbortController(),
+    opened: new Map<string, OpenCodeRecord>(),
+    pendingTools: new Map<string, string>(),
+    pendingInput: new Map<string, string>(),
+    touchedFiles: new Map<string, string[]>(),
+    openQuestions: new Map<string, string>(),
+    settledTools: new Set<string>(),
+    promptIds: new Set(["msg_prompt"]),
+  };
+  const session: SessionState = {
+    bbThreadId: "bb-thread",
+    providerThreadId: "ses_1",
+    cwd: "/repo",
+    disableSubagents: true,
+    dynamicTools: [],
+    disallowedTools: new Set(),
+    enabledModels: null,
+    instructions: "",
+    bridgeEnvVars: {},
+    dynamicToolScope: {},
+    active,
+    usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  const router = new OpenCodeEventRouter(
+    async () => ({}),
+    (_threadId, deltas) => emitted.push(...deltas),
+    new Map([[session.providerThreadId, session]]),
+  );
+  const event = (type: string, data: OpenCodeRecord = {}) =>
+    router.handleEvent({ type, data: { sessionID: "ses_1", ...data } });
+  // A compaction from the previous turn finishes after this turn opened.
+  await event("session.execution.succeeded");
+  assert.equal(session.active, active);
+  await event("session.inbox.delivered", { inboxID: "msg_other" });
+  await event("session.execution.succeeded");
+  assert.equal(session.active, active);
+  await event("session.inbox.delivered", { inboxID: "msg_prompt" });
+  await event("session.execution.succeeded");
+  assert.equal(session.active, undefined);
+  assert.equal(emitted.at(-1)?.kind, "turn.boundary");
+});

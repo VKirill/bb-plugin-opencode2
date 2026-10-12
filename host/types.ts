@@ -22,6 +22,14 @@ export type ActiveTurn = {
   startedAt: number;
   /** Set once OpenCode accepted the prompt; reconciliation waits for it. */
   promptDelivered?: boolean;
+  /** Message IDs of this turn's prompts (the first and any steers). */
+  promptIds?: Set<string>;
+  /**
+   * Set when OpenCode starts working on one of this turn's prompts. Terminal
+   * execution events before that belong to earlier work (for example a
+   * compaction still finishing) and must not end this turn.
+   */
+  inputDelivered?: boolean;
   abortController: AbortController;
   manualCompaction?: { itemId: string };
   checkpointId?: string;

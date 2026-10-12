@@ -567,6 +567,17 @@ export class OpenCodeEventRouter {
         },
       ]);
     }
+    if (
+      event.type === "session.inbox.delivered" &&
+      active.promptIds?.has(stringValue(data.inboxID) ?? "")
+    )
+      active.inputDelivered = true;
+    if (
+      eventType.startsWith("session.execution.") &&
+      active.promptIds?.size &&
+      !active.inputDelivered
+    )
+      return;
     if (event.type === "session.execution.succeeded")
       this.finish(session, "completed");
     if (event.type === "session.execution.interrupted")
