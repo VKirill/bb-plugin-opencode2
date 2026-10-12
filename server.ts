@@ -6,6 +6,7 @@ import { type BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   opencodeHostContract,
   opencodeSettingsRpcContract,
+  type HostStatus,
   type ModelSummary,
 } from "./settings-contract.ts";
 import { normalizeModelSettings } from "./model-settings.ts";
@@ -87,9 +88,34 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
 
+  async function getStatus() {
+    const hosts = (await bb.sdk.hosts.list()).filter(
+      (item) => item.status === "connected",
+    );
+    const results = await Promise.all(
+      hosts.map(async (item): Promise<HostStatus> => {
+        try {
+          return {
+            hostId: item.id,
+            hostName: item.name,
+            status: await host.call("getStatus", {}, { hostId: item.id }),
+          };
+        } catch (error) {
+          return {
+            hostId: item.id,
+            hostName: item.name,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }),
+    );
+    return { hosts: results };
+  }
+
   bb.rpc.register(opencodeSettingsRpcContract, {
     getSettings: () => modelSettings,
     listModels,
+    getStatus,
     async saveSettings(next) {
       modelSettings = normalizeModelSettings(next);
       await bb.storage.kv.set(SETTINGS_KEY, modelSettings);

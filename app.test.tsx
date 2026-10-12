@@ -37,12 +37,48 @@ describe("OpenCode settings", () => {
             ],
           }),
           saveSettings,
+          getStatus: async () => ({
+            hosts: [
+              {
+                hostId: "host_1",
+                hostName: "laptop",
+                status: {
+                  status: "ready" as const,
+                  statusMessage: null,
+                  installedVersion: "2.0.27",
+                  latestVersion: "2.0.28",
+                  minimumSupportedVersion: "2.0.26",
+                  loginCommand: "opencode2 auth login",
+                  modelCount: 1,
+                },
+              },
+            ],
+          }),
         },
       },
     );
     mountedSlots.push(slot);
 
+    expect(await slot.findByText(/Ready · OpenCode 2\.0\.27/)).toBeTruthy();
+    expect(slot.getByText(/OpenCode 2\.0\.28 is available/)).toBeTruthy();
+
+    // Provider groups start collapsed; expanding shows the models.
+    const group = await slot.findByRole("button", { name: /openai/ });
+    expect(slot.queryByText("GPT-5")).toBeNull();
+    fireEvent.click(group);
     expect(await slot.findByText("GPT-5")).toBeTruthy();
+
+    fireEvent.click(
+      slot.getByRole("switch", { name: "Allow OpenCode subagents" }),
+    );
+    await waitFor(() => {
+      expect(saveSettings).toHaveBeenCalledWith({
+        providerEnabled: true,
+        enabledModels: null,
+        disableSubagents: false,
+      });
+    });
+
     fireEvent.click(
       slot.getByRole("switch", { name: "Enable OpenCode v2 provider" }),
     );
@@ -51,7 +87,7 @@ describe("OpenCode settings", () => {
       expect(saveSettings).toHaveBeenCalledWith({
         providerEnabled: false,
         enabledModels: null,
-        disableSubagents: true,
+        disableSubagents: false,
       });
     });
   });

@@ -2,8 +2,10 @@ import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import {
   modelSettingsSchema,
   opencodeSettingsRpcContract,
+  type HostStatus,
   type ModelSettings,
   type ModelSummary,
+  type OpenCodeStatus,
 } from "../settings-contract.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -23,6 +25,10 @@ function groupByProvider(models: ModelSummary[]) {
       items: items.sort((a, b) => a.displayName.localeCompare(b.displayName)),
     }))
     .sort((a, b) => a.providerId.localeCompare(b.providerId));
+}
+
+function errorText(cause: unknown) {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 function SettingRow({
@@ -56,11 +62,69 @@ function SettingRow({
   );
 }
 
+const STATUS_LABELS: Record<OpenCodeStatus["status"], string> = {
+  ready: "Ready",
+  not_installed: "Not installed",
+  unsupported_version: "Update required",
+  unauthenticated: "No model provider connected",
+  unknown: "Service unreachable",
+};
+
+function statusDetail(status: OpenCodeStatus) {
+  if (status.status === "not_installed")
+    return "Install OpenCode v2 from the provider settings, or run `npm install -g @opencode/cli`.";
+  if (status.status === "unauthenticated")
+    return `Run \`${status.loginCommand}\` on this machine to connect a model provider.`;
+  if (status.statusMessage) return status.statusMessage;
+  const parts = [`${status.modelCount} models available`];
+  if (
+    status.latestVersion &&
+    status.installedVersion &&
+    status.latestVersion !== status.installedVersion
+  )
+    parts.push(
+      `OpenCode ${status.latestVersion} is available (run \`opencode2 upgrade\`)`,
+    );
+  return parts.join(" · ");
+}
+
+function HostStatusRow({
+  host,
+  showName,
+}: {
+  host: HostStatus;
+  showName: boolean;
+}) {
+  const status = host.status;
+  const ready = status?.status === "ready";
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div className="min-w-0">
+        <div className="text-sm">
+          {showName ? `${host.hostName} · ` : ""}
+          {status
+            ? `${STATUS_LABELS[status.status]}${status.installedVersion ? ` · OpenCode ${status.installedVersion}` : ""}`
+            : "Status unavailable"}
+        </div>
+        <div className="text-sm text-muted-foreground">
+          {status ? statusDetail(status) : host.error}
+        </div>
+      </div>
+      <span
+        aria-hidden
+        className={`mt-1.5 size-2 shrink-0 rounded-full ${ready ? "bg-emerald-500" : "bg-amber-500"}`}
+      />
+    </div>
+  );
+}
+
 export function SettingsSection() {
   const rpc = useRpc<typeof opencodeSettingsRpcContract>();
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const [models, setModels] = useState<ModelSummary[]>([]);
+  const [hosts, setHosts] = useState<HostStatus[] | null>(null);
   const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -77,6 +141,15 @@ export function SettingsSection() {
     const id = ++operationId.current;
     setIsLoading(true);
     setError(null);
+    // The status probe can be slow; it never blocks the model list.
+    void rpcRef.current
+      .call("getStatus", {})
+      .then((result) => {
+        if (id === operationId.current) setHosts(result.hosts);
+      })
+      .catch(() => {
+        if (id === operationId.current) setHosts([]);
+      });
     try {
       const [nextSettings, nextModels] = await Promise.all([
         rpcRef.current.call("getSettings", null),
@@ -86,9 +159,7 @@ export function SettingsSection() {
       setSettings(nextSettings);
       setModels(nextModels.models);
     } catch (cause) {
-      if (id === operationId.current) {
-        setError(cause instanceof Error ? cause.message : String(cause));
-      }
+      if (id === operationId.current) setError(errorText(cause));
     } finally {
       if (id === operationId.current) setIsLoading(false);
     }
@@ -114,22 +185,20 @@ export function SettingsSection() {
     } catch (cause) {
       if (id === operationId.current) {
         setSettings(previous);
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(errorText(cause));
       }
     } finally {
       if (id === operationId.current) setIsSaving(false);
     }
   }
 
-  const isEnabled = (model: ModelSummary): boolean => {
-    if (!settings) return false;
-    return (
-      settings.enabledModels === null ||
-      settings.enabledModels.includes(model.id)
-    );
-  };
+  const isEnabled = (model: ModelSummary): boolean =>
+    settings !== null &&
+    (settings.enabledModels === null ||
+      settings.enabledModels.includes(model.id));
 
   const providers = useMemo(() => groupByProvider(models), [models]);
+  const searching = query.trim().length > 0;
 
   const visibleProviders = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -146,47 +215,82 @@ export function SettingsSection() {
       .filter((group) => group.items.length > 0);
   }, [providers, query]);
 
-  function setModelEnabled(model: ModelSummary, nextEnabled: boolean) {
-    if (!settings) return;
-    const current =
-      settings.enabledModels === null
-        ? new Set(models.map((item) => item.id))
-        : new Set(settings.enabledModels);
-    if (nextEnabled) current.add(model.id);
-    else current.delete(model.id);
-    void save({ ...settings, enabledModels: [...current].sort() });
+  const enabledCount = models.filter(isEnabled).length;
+
+  function enabledSet() {
+    return settings?.enabledModels === null || !settings
+      ? new Set(models.map((item) => item.id))
+      : new Set(settings.enabledModels);
   }
 
-  function setProviderEnabled(providerId: string, nextEnabled: boolean) {
+  function setModelsEnabled(ids: string[], nextEnabled: boolean) {
     if (!settings) return;
-    const base =
-      settings.enabledModels === null
-        ? new Set(models.map((item) => item.id))
-        : new Set(settings.enabledModels);
-    for (const model of models) {
-      if (model.providerId !== providerId) continue;
-      if (nextEnabled) base.add(model.id);
-      else base.delete(model.id);
+    const current = enabledSet();
+    for (const id of ids) {
+      if (nextEnabled) current.add(id);
+      else current.delete(id);
     }
-    void save({ ...settings, enabledModels: [...base].sort() });
+    // Every model on: store null so newly connected models appear too.
+    const allOn = models.every((model) => current.has(model.id));
+    void save({
+      ...settings,
+      enabledModels: allOn ? null : [...current].sort(),
+    });
   }
 
-  function setAllModels(nextEnabled: boolean) {
-    if (!settings) return;
-    void save({ ...settings, enabledModels: nextEnabled ? null : [] });
+  function toggleExpanded(providerId: string) {
+    setExpanded((previous) => {
+      const next = new Set(previous);
+      if (next.has(providerId)) next.delete(providerId);
+      else next.add(providerId);
+      return next;
+    });
   }
 
   const busy = settings === null || isSaving;
 
   return (
     <div className="opencode-settings">
-      <div className="text-sm font-medium">Configuration</div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="text-sm font-medium">OpenCode</div>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isLoading || isSaving}
+          onClick={() => void load()}
+        >
+          Refresh
+        </Button>
+      </div>
 
+      <div className="rounded-lg border border-border p-4">
+        <div className="flex flex-col gap-3">
+          {hosts === null ? (
+            <div className="text-sm text-muted-foreground" role="status">
+              Checking OpenCode…
+            </div>
+          ) : hosts.length === 0 ? (
+            <div className="text-sm text-muted-foreground">
+              No connected hosts. Connect a host to check OpenCode.
+            </div>
+          ) : (
+            hosts.map((host) => (
+              <HostStatusRow
+                key={host.hostId}
+                host={host}
+                showName={hosts.length > 1}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="text-sm font-medium">Behavior</div>
       <div className="rounded-lg border border-border p-4">
         <div className="flex flex-col gap-4">
           <SettingRow
-            title="Provider enabled"
-            description="Show OpenCode v2 in the provider picker."
+            title="Show in the provider picker"
+            description="Offer OpenCode v2 for new threads. Existing threads keep their provider."
             checked={settings?.providerEnabled ?? false}
             disabled={busy}
             label="Enable OpenCode v2 provider"
@@ -195,13 +299,13 @@ export function SettingsSection() {
             }}
           />
           <SettingRow
-            title="Disable provider subagents"
-            description="Prevent OpenCode from starting native subagents so agents use BB for delegation."
-            checked={settings?.disableSubagents !== false}
+            title="Allow OpenCode subagents"
+            description="Let OpenCode delegate to its own subagents (shown as delegation rows). When off, OpenCode hides its subagent tool and agents delegate through BB instead."
+            checked={settings?.disableSubagents === false}
             disabled={busy}
-            label="Disable provider subagents"
+            label="Allow OpenCode subagents"
             onCheckedChange={(next) => {
-              if (settings) void save({ ...settings, disableSubagents: next });
+              if (settings) void save({ ...settings, disableSubagents: !next });
             }}
           />
         </div>
@@ -211,7 +315,9 @@ export function SettingsSection() {
         <div>
           <div className="text-sm font-medium">Models</div>
           <div className="text-sm text-muted-foreground">
-            Only enabled models appear in the OpenCode v2 picker.
+            {models.length > 0
+              ? `${enabledCount} of ${models.length} models appear in the OpenCode v2 picker.`
+              : "Only enabled models appear in the OpenCode v2 picker."}
           </div>
         </div>
         <div className="flex gap-2">
@@ -219,7 +325,7 @@ export function SettingsSection() {
             variant="outline"
             size="sm"
             disabled={busy || models.length === 0}
-            onClick={() => setAllModels(true)}
+            onClick={() => void save({ ...settings!, enabledModels: null })}
           >
             Enable all
           </Button>
@@ -227,39 +333,23 @@ export function SettingsSection() {
             variant="outline"
             size="sm"
             disabled={busy || models.length === 0}
-            onClick={() => setAllModels(false)}
+            onClick={() => void save({ ...settings!, enabledModels: [] })}
           >
             Disable all
           </Button>
         </div>
       </div>
 
-      <div className="flex gap-2">
-        <Input
-          aria-label="Search OpenCode models"
-          placeholder="Search models"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <Button
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          disabled={isLoading || isSaving}
-          onClick={() => void load()}
-        >
-          Refresh
-        </Button>
-      </div>
+      <Input
+        aria-label="Search OpenCode models"
+        placeholder="Search models"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
 
       {isLoading ? (
         <div className="text-sm text-muted-foreground" role="status">
           Loading models…
-        </div>
-      ) : null}
-      {isSaving ? (
-        <div className="text-sm text-muted-foreground" role="status">
-          Saving…
         </div>
       ) : null}
       {error ? (
@@ -278,55 +368,84 @@ export function SettingsSection() {
         </div>
       ) : null}
 
-      {!isLoading && !error
-        ? visibleProviders.map((group) => {
+      {!isLoading && !error && visibleProviders.length > 0 ? (
+        <div className="rounded-lg border border-border">
+          {visibleProviders.map((group) => {
             const groupEnabled = group.items.filter(isEnabled).length;
             const allOn = groupEnabled === group.items.length;
+            const open = searching || expanded.has(group.providerId);
             return (
-              <div key={group.providerId}>
-                <div className="flex items-center justify-between gap-4">
-                  <div className="text-sm text-muted-foreground">
-                    {group.providerId} · {groupEnabled}/{group.items.length}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => setProviderEnabled(group.providerId, !allOn)}
+              <div
+                key={group.providerId}
+                className="border-b border-border last:border-b-0"
+              >
+                <div className="flex items-center justify-between gap-4 p-3">
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm"
+                    aria-expanded={open}
+                    onClick={() => toggleExpanded(group.providerId)}
                   >
-                    {allOn ? "Disable" : "Enable"}
-                  </Button>
+                    <span aria-hidden className="text-muted-foreground">
+                      {open ? "▾" : "▸"}
+                    </span>
+                    <span className="truncate">{group.providerId}</span>
+                    <span className="shrink-0 text-muted-foreground">
+                      {groupEnabled}/{group.items.length}
+                    </span>
+                  </button>
+                  <Switch
+                    aria-label={`Enable all ${group.providerId} models`}
+                    checked={allOn}
+                    disabled={busy}
+                    onCheckedChange={(next) =>
+                      setModelsEnabled(
+                        group.items.map((model) => model.id),
+                        next,
+                      )
+                    }
+                  />
                 </div>
-                <div className="rounded-lg border border-border">
-                  {group.items.map((model) => (
-                    <div
-                      key={model.id}
-                      className="flex items-center justify-between gap-4 border-b border-border p-3 last:border-b-0"
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-sm">
-                          {model.displayName}
+                {open
+                  ? group.items.map((model) => (
+                      <div
+                        key={model.id}
+                        className="flex items-center justify-between gap-4 border-t border-border py-2 pr-3 pl-8"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-sm">
+                            {model.displayName}
+                            {model.isDefault ? (
+                              <span className="ml-2 text-xs text-muted-foreground">
+                                OpenCode default
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="truncate text-xs text-muted-foreground">
+                            {model.id}
+                          </div>
                         </div>
-                        <div className="truncate text-sm text-muted-foreground">
-                          {model.id}
-                        </div>
+                        <Switch
+                          aria-label={`Enable ${model.displayName} from ${model.providerId}`}
+                          checked={isEnabled(model)}
+                          disabled={busy}
+                          onCheckedChange={(next) =>
+                            setModelsEnabled([model.id], next)
+                          }
+                        />
                       </div>
-                      <Switch
-                        aria-label={`Enable ${model.displayName} from ${model.providerId}`}
-                        checked={isEnabled(model)}
-                        disabled={busy}
-                        onCheckedChange={(next) => setModelEnabled(model, next)}
-                      />
-                    </div>
-                  ))}
-                </div>
+                    ))
+                  : null}
               </div>
             );
-          })
-        : null}
+          })}
+        </div>
+      ) : null}
 
       <div className="text-xs text-muted-foreground">
-        Changes apply when BB refreshes the provider model catalog.
+        {isSaving
+          ? "Saving…"
+          : "Settings apply from the next turn. The model picker updates when BB refreshes its model list."}
       </div>
     </div>
   );

@@ -3,6 +3,12 @@ import {
   modelSummarySchema,
   opencodeHostContract,
 } from "./settings-contract.ts";
+import {
+  installationStatus,
+  MIN_OPENCODE_VERSION,
+  OPENCODE_LOGIN_COMMAND,
+  providerHealth,
+} from "./host/maintenance.ts";
 import { openCodeServer } from "./host/opencode-server.ts";
 import { shutdownBridge } from "./host/provider-bridge.ts";
 import { sessions } from "./host/types.ts";
@@ -97,8 +103,37 @@ export default experimental_defineHostEntry({
             id,
             providerId: model.providerID,
             displayName: typeof model.name === "string" ? model.name : id,
+            ...(id === catalog.defaultId ? { isDefault: true } : {}),
           });
         }),
+      };
+    },
+    async getStatus(_input, context) {
+      openCodeServer.setDataDir(context.experimental_paths.dataDir);
+      const cwd = process.cwd();
+      // Report OpenCode itself even while the BB provider is switched off.
+      const [health, installation] = await Promise.all([
+        providerHealth(
+          {
+            ...(await openCodeServer.readModelSettings()),
+            providerEnabled: true,
+          },
+          cwd,
+        ),
+        installationStatus(true),
+      ]);
+      const modelCount = await openCodeServer
+        .modelCatalog(cwd)
+        .then((catalog) => catalog.models.length)
+        .catch(() => 0);
+      return {
+        status: health.status === "expired" ? "unauthenticated" : health.status,
+        statusMessage: health.statusMessage,
+        installedVersion: health.installedVersion,
+        latestVersion: installation.latestVersion,
+        minimumSupportedVersion: MIN_OPENCODE_VERSION,
+        loginCommand: OPENCODE_LOGIN_COMMAND,
+        modelCount: health.status === "ready" ? modelCount : 0,
       };
     },
     async setModelSettings(input, context) {

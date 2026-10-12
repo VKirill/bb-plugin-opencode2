@@ -6,6 +6,34 @@ export const modelSummarySchema = z
     id: z.string().min(1),
     providerId: z.string().min(1),
     displayName: z.string().min(1),
+    isDefault: z.boolean().optional(),
+  })
+  .strict();
+
+export const openCodeStatusSchema = z
+  .object({
+    status: z.enum([
+      "ready",
+      "not_installed",
+      "unsupported_version",
+      "unauthenticated",
+      "unknown",
+    ]),
+    statusMessage: z.string().nullable(),
+    installedVersion: z.string().nullable(),
+    latestVersion: z.string().nullable(),
+    minimumSupportedVersion: z.string(),
+    loginCommand: z.string(),
+    modelCount: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const hostStatusSchema = z
+  .object({
+    hostId: z.string().min(1),
+    hostName: z.string(),
+    status: openCodeStatusSchema.optional(),
+    error: z.string().optional(),
   })
   .strict();
 
@@ -33,6 +61,10 @@ export const opencodeHostContract = defineRpcContract({
     input: modelSettingsSchema,
     output: z.object({ ok: z.literal(true) }).strict(),
   },
+  getStatus: {
+    input: z.object({}).strict(),
+    output: openCodeStatusSchema,
+  },
 });
 
 export const opencodeSettingsRpcContract = defineRpcContract({
@@ -50,7 +82,13 @@ export const opencodeSettingsRpcContract = defineRpcContract({
     input: modelSettingsSchema,
     output: modelSettingsSchema,
   },
+  getStatus: {
+    input: z.object({}).strict(),
+    output: z.object({ hosts: z.array(hostStatusSchema).max(1_000) }).strict(),
+  },
 });
 
 export type ModelSettings = z.infer<typeof modelSettingsSchema>;
 export type ModelSummary = z.infer<typeof modelSummarySchema>;
+export type OpenCodeStatus = z.infer<typeof openCodeStatusSchema>;
+export type HostStatus = z.infer<typeof hostStatusSchema>;
