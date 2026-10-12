@@ -372,7 +372,7 @@ test("ignores terminal events from earlier work until the turn's prompt is deliv
   assert.equal(emitted.at(-1)?.kind, "turn.boundary");
 });
 
-test("nests the MCP calls a Code Mode execute makes under it", async () => {
+test("shows a Code Mode execute as one code row without nested rows", async () => {
   const emitted: OpenCodeRecord[] = [];
   const active = {
     providerTurnId: "turn-1",
@@ -411,63 +411,28 @@ test("nests the MCP calls a Code Mode execute makes under it", async () => {
     });
   // Shapes recorded from OpenCode 2.0.27 with a Code Mode MCP server.
   const code =
-    'const a = await tools.cm_echo.shout({text: "hello"});\nconst b = await tools.cm_echo.shout({text: "world"});\nreturn [a, b];';
-  const hello = { tool: "cm_echo.shout", input: { text: "hello" } };
-  const world = { tool: "cm_echo.shout", input: { text: "world" } };
+    'const a = await tools.cm_echo.shout({text: "hello"});\nreturn a;';
+  const call = { tool: "cm_echo.shout", input: { text: "hello" } };
   await event("session.tool.input.started", { name: "execute" });
   await event("session.tool.called", { input: { code } });
   await event("session.tool.progress", {
-    metadata: { toolCalls: [{ ...hello, status: "running" }] },
-  });
-  await event("session.tool.progress", {
-    metadata: { toolCalls: [{ ...hello, status: "completed" }] },
-  });
-  await event("session.tool.progress", {
-    metadata: {
-      toolCalls: [
-        { ...hello, status: "completed" },
-        { ...world, status: "running" },
-      ],
-    },
+    metadata: { toolCalls: [{ ...call, status: "running" }] },
   });
   await event("session.tool.success", {
-    content: [{ type: "text", text: '["HELLO","WORLD"]' }],
-    metadata: {
-      toolCalls: [
-        { ...hello, status: "completed" },
-        { ...world, status: "completed" },
-      ],
-    },
+    content: [{ type: "text", text: '"HELLO"' }],
+    metadata: { toolCalls: [{ ...call, status: "completed" }] },
   });
-
-  const execOpen = emitted.find(
-    (delta) =>
-      delta.kind === "item.open" && delta.key.providerItemId === "call_exec",
-  );
-  assert.equal(execOpen?.presentation.label.completed, "Ran code");
-  assert.equal(execOpen?.presentation.title, "cm_echo.shout");
-  const nested = emitted.filter((delta) =>
-    String(delta.key?.providerItemId).startsWith("call_exec:call:"),
-  );
+  // BB renders any item with a parentRef as a subagent's work.
+  assert.equal(emitted.filter((delta) => delta.key?.parentRef).length, 0);
   assert.deepEqual(
-    nested.map((delta) => [delta.kind, delta.key.providerItemId, delta.status]),
+    emitted.map((delta) => [delta.kind, delta.key.providerItemId]),
     [
-      ["item.open", "call_exec:call:0", undefined],
-      ["item.close", "call_exec:call:0", "completed"],
-      ["item.open", "call_exec:call:1", undefined],
-      ["item.close", "call_exec:call:1", "completed"],
+      ["item.open", "call_exec"],
+      ["item.close", "call_exec"],
     ],
   );
-  for (const delta of nested) {
-    assert.equal(delta.key.parentRef, "call_exec");
-    assert.equal(delta.item.server, "cm_echo");
-    assert.equal(delta.item.tool, "shout");
-  }
-  const execClose = emitted.findIndex(
-    (delta) =>
-      delta.kind === "item.close" && delta.key.providerItemId === "call_exec",
-  );
-  assert.ok(execClose > emitted.indexOf(nested.at(-1)!));
+  assert.equal(emitted[0].presentation.label.completed, "Ran code");
+  assert.equal(emitted[0].presentation.title, "cm_echo.shout");
 });
 
 test("a failed permission reply never escapes as an unhandled rejection", async () => {
