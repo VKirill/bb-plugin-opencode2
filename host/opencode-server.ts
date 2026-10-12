@@ -34,6 +34,9 @@ const MCP_REGISTRY_FILE = "opencode2-mcp-registry.json";
 const SESSION_REGISTRY_FILE = "opencode2-session-registry.json";
 
 const MODEL_CATALOG_TTL_MS = 60_000;
+const MCP_CONNECT_TIMEOUT_MS = 10_000;
+const MCP_CONNECT_POLL_MS = 150;
+const MCP_SETTLE_MS = 1_000;
 const RECONCILE_INTERVAL_MS = 30_000;
 const RECONCILE_MIN_TURN_AGE_MS = 10_000;
 const RECONCILE_SETTLE_MS = 5_000;
@@ -543,6 +546,49 @@ export class OpenCodeServer {
         return [{ id, ...(path ? { path } : {}) }];
       },
     );
+  }
+
+  /**
+   * Wait until OpenCode reports a runtime MCP server connected. Gives up
+   * quietly after the timeout or when the server failed: the session still
+   * works, only without that server's tools, and the failure is logged.
+   */
+  async waitForMcpServer(
+    serverName: string,
+    cwd: string,
+    timeoutMs = MCP_CONNECT_TIMEOUT_MS,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    let last = "unknown";
+    while (Date.now() < deadline) {
+      const result = await this.request(`/api/mcp?${locationQuery(cwd)}`).catch(
+        (): OpenCodeRecord => ({}),
+      );
+      const server = (Array.isArray(result.data) ? result.data : [])
+        .map(inputRecord)
+        .find((entry) => entry.name === serverName);
+      const status = inputRecord(server?.status);
+      last = stringValue(status.status) ?? "missing";
+      if (last === "connected") {
+        // OpenCode lists the server's tools before it reports "connected",
+        // but refreshes the tool set a session step sees a few hundred
+        // milliseconds later, with no event to wait on. Measured under
+        // 500 ms on OpenCode 2.0.27.
+        await new Promise((resolve) => setTimeout(resolve, MCP_SETTLE_MS));
+        return true;
+      }
+      if (last === "failed") {
+        process.stderr.write(
+          `[opencode2] BB tool server ${serverName} failed to start: ${stringValue(status.error) ?? "unknown error"}\n`,
+        );
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, MCP_CONNECT_POLL_MS));
+    }
+    process.stderr.write(
+      `[opencode2] BB tool server ${serverName} did not connect within ${timeoutMs} ms (last status: ${last})\n`,
+    );
+    return false;
   }
 
   async nativeSkillNames(cwd: string) {

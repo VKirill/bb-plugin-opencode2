@@ -148,6 +148,10 @@ async function installDynamicTools(session: SessionState) {
       proxy.config,
     );
     await openCodeServer.request(request.path, request.init);
+    // OpenCode starts the MCP child asynchronously, so a turn sent right
+    // after setup would not see BB's tools. Wait until it can. This runs only
+    // when the server is (re)registered, not on every turn.
+    await openCodeServer.waitForMcpServer(proxy.serverName, session.cwd);
     await openCodeServer.rememberMcpRegistration(session.providerThreadId, {
       serverName: proxy.serverName,
       cwd: session.cwd,

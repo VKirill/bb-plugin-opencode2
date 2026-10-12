@@ -105,6 +105,10 @@ export async function startDynamicToolsMcpProxy(args: {
           type: "local",
           command: [process.execPath, args.entryPath, DYNAMIC_TOOLS_MCP_ARG],
           environment: {
+            // The bridge may run on an Electron binary acting as Node (BB's
+            // desktop app). Without this, OpenCode would launch the app itself,
+            // which exits at once, and every BB tool would be missing.
+            ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
             [ENV_PORT]: String(address.port),
             [ENV_TOKEN]: token,
             [ENV_TOOLS]: serializedTools,
