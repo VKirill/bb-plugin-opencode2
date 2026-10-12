@@ -782,6 +782,9 @@ export class OpenCodeEventRouter {
     key: string,
     changes: RecordValue[],
   ) {
+    for (const change of changes)
+      if (typeof change.diff === "string" && change.diff)
+        (active.turnPatches ??= []).push(change.diff);
     const item = { type: "fileChange", changes };
     this.emit(session.bbThreadId, [
       {
@@ -849,6 +852,18 @@ export class OpenCodeEventRouter {
     active.pendingTools.clear();
     active.pendingInput.clear();
     active.touchedFiles.clear();
+    // OpenCode's session diff endpoint needs snapshots that are often off,
+    // so the turn diff is the sequence of patches its edit tools reported.
+    if (active.turnPatches?.length)
+      this.emit(session.bbThreadId, [
+        {
+          kind: "turn.diff",
+          diff: active.turnPatches
+            .map((patch) => (patch.endsWith("\n") ? patch : `${patch}\n`))
+            .join(""),
+          providerTurnId: active.providerTurnId,
+        },
+      ]);
     if (status === "failed") {
       this.emit(
         session.bbThreadId,

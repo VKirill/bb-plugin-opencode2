@@ -33,6 +33,8 @@ export type ActiveTurn = {
   settledTools: Set<string>;
   /** Tool calls already closed, so a repeated terminal event is ignored. */
   finishedTools?: Set<string>;
+  /** Patches of every file change this turn, for `turn.diff`. */
+  turnPatches?: string[];
   /** Live shell output pollers by tool call ID. */
   shellPolls?: Map<string, { stopped: boolean }>;
   /** Token counts of the latest finished step, for `usage.last`. */

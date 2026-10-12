@@ -272,3 +272,55 @@ test("nests a native subagent's work under its delegation row", async () => {
   });
   assert.equal(emitted.length, count);
 });
+
+test("emits the turn's file patches as turn.diff before the boundary", async () => {
+  const emitted: OpenCodeRecord[] = [];
+  const active = {
+    providerTurnId: "turn-1",
+    startedAt: Date.now(),
+    abortController: new AbortController(),
+    opened: new Map<string, OpenCodeRecord>(),
+    pendingTools: new Map<string, string>(),
+    pendingInput: new Map<string, string>(),
+    touchedFiles: new Map<string, string[]>(),
+    openQuestions: new Map<string, string>(),
+    settledTools: new Set<string>(),
+  };
+  const session: SessionState = {
+    bbThreadId: "bb-thread",
+    providerThreadId: "ses_1",
+    cwd: "/repo",
+    disableSubagents: true,
+    dynamicTools: [],
+    disallowedTools: new Set(),
+    enabledModels: null,
+    instructions: "",
+    bridgeEnvVars: {},
+    dynamicToolScope: {},
+    active,
+    usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  const router = new OpenCodeEventRouter(
+    async () => ({}),
+    (_threadId, deltas) => emitted.push(...deltas),
+    new Map([[session.providerThreadId, session]]),
+  );
+  const event = (type: string, data: OpenCodeRecord) =>
+    router.handleEvent({ type, data: { sessionID: "ses_1", ...data } });
+  const patch = "--- a.txt\n+++ a.txt\n@@ -1 +1 @@\n-two\n+TWO\n";
+  await event("session.tool.input.started", { id: "call_edit", name: "edit" });
+  await event("session.tool.called", {
+    id: "call_edit",
+    input: { path: "a.txt", oldString: "two", newString: "TWO" },
+  });
+  await event("session.tool.success", {
+    id: "call_edit",
+    content: [{ type: "text", text: "Edited a.txt" }],
+    metadata: { files: [{ file: "a.txt", patch, status: "modified" }] },
+  });
+  await event("session.execution.succeeded", {});
+  const kinds = emitted.map((delta) => delta.kind);
+  const diffIndex = kinds.indexOf("turn.diff");
+  assert.ok(diffIndex >= 0 && diffIndex < kinds.indexOf("turn.boundary"));
+  assert.equal(emitted[diffIndex].diff, patch);
+});
