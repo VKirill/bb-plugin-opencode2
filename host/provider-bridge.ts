@@ -4,11 +4,12 @@ import {
   BRIDGE_JSON_RPC_ERRORS,
   createBridgeLineHandler,
   experimental_defineProviderBridge,
-  experimental_readCliVersion as readCliVersion,
   initializeParamsSchema,
   modelListParamsSchema,
   ProviderRequestDecodeError,
   removeCommandMentionsFromPromptInput,
+  providerInstallationRunParamsSchema,
+  providerInstallationStatusParamsSchema,
   providerMaintenanceParamsSchema,
   runBridgeRequest,
   skillsConfigureParamsSchema,
@@ -46,6 +47,11 @@ import {
   sessionRenameRequest,
   steerAcceptedDelta,
 } from "./opencode-requests.ts";
+import {
+  installationRun,
+  installationStatus,
+  providerHealth,
+} from "./maintenance.ts";
 import { openCodeServer } from "./opencode-server.ts";
 import { promptBody } from "./prompt.ts";
 import {
@@ -82,6 +88,8 @@ const PARAM_SCHEMAS = {
   initialize: initializeParamsSchema,
   "model/list": modelListParamsSchema,
   "provider/health": providerMaintenanceParamsSchema,
+  "provider/installation/status": providerInstallationStatusParamsSchema,
+  "provider/installation/run": providerInstallationRunParamsSchema,
   "thread/start": threadStartParamsSchema,
   "thread/resume": threadResumeParamsSchema,
   "thread/fork": threadForkParamsSchema,
@@ -165,27 +173,22 @@ async function handle(request: RecordValue) {
       });
       return;
     case "provider/health": {
-      const installedVersion = await readCliVersion("opencode2");
       const settings = await openCodeServer.readModelSettings();
       sendResult(request.id, {
         supported: true,
-        health: {
-          status:
-            settings.providerEnabled && installedVersion
-              ? "ready"
-              : "not_installed",
-          statusMessage: null,
-          accountEmail: null,
-          planLabel: null,
-          installedVersion: settings.providerEnabled ? installedVersion : null,
-          minimumSupportedVersion: null,
-          canInstall: false,
-          canUpdate: false,
-          loginCommand: null,
-        },
+        health: await providerHealth(settings, params.cwd ?? process.cwd()),
       });
       return;
     }
+    case "provider/installation/status":
+      sendResult(
+        request.id,
+        await installationStatus(params.checkUpdates !== false),
+      );
+      return;
+    case "provider/installation/run":
+      sendResult(request.id, await installationRun(params.action));
+      return;
     case "model/list": {
       const cwd = params.cwd ?? process.cwd();
       const settings = await openCodeServer.readModelSettings();

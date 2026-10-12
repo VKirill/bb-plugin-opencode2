@@ -125,9 +125,9 @@ export default async function plugin(bb: BbPluginApi) {
     icon: "./icons/opencode.svg",
     strings: {
       signInHint:
-        "Open an OpenCode v2 thread and use /connect to configure a provider.",
+        "Run `opencode2 auth login` on this machine to connect a model provider.",
       expiredHint:
-        "Your OpenCode provider session needs attention. Open OpenCode v2 and use /connect.",
+        "An OpenCode model provider needs to be reconnected. Run `opencode2 auth login`, then reload.",
       installUrl: "https://opencode.ai/v2/docs/",
       brandPrefix: "OpenCode ",
       iconTint: { light: "#18181B", dark: "#FAFAFA" },
@@ -136,7 +136,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     // Only show the provider when `opencode2` is installed on the target machine.
     experimental_visibility: "installed",
-    maintenance: { health: true, usage: false, installation: false },
+    maintenance: { health: true, usage: false, installation: true },
     models: { scope: "workspace" },
     capabilities: {
       supportsServiceTier: false,
