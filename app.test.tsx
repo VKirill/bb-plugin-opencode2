@@ -26,6 +26,7 @@ describe("OpenCode settings", () => {
             providerEnabled: true,
             enabledModels: null,
             disableSubagents: true,
+            hideBbToolsOutsideBb: true,
           }),
           listModels: async () => ({
             models: [
@@ -76,6 +77,7 @@ describe("OpenCode settings", () => {
         providerEnabled: true,
         enabledModels: null,
         disableSubagents: false,
+        hideBbToolsOutsideBb: true,
       });
     });
 
@@ -88,6 +90,7 @@ describe("OpenCode settings", () => {
         providerEnabled: false,
         enabledModels: null,
         disableSubagents: false,
+        hideBbToolsOutsideBb: true,
       });
     });
   });

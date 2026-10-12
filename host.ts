@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
   experimental_defineHostEntry,
   experimental_filterResolvedNativeRoots,
@@ -13,6 +14,7 @@ import {
   OPENCODE_LOGIN_COMMAND,
   providerHealth,
 } from "./host/maintenance.ts";
+import { syncBbToolsRule } from "./host/opencode-config.ts";
 import { openCodeServer } from "./host/opencode-server.ts";
 import { shutdownBridge } from "./host/provider-bridge.ts";
 import { nativeSkillRoots } from "./host/opencode-requests.ts";
@@ -70,6 +72,11 @@ export {
   subagentDisabledToolError,
   toolFailureError,
 } from "./host/prompt.ts";
+export {
+  addBbToolsRule,
+  removeBbToolsRule,
+  syncBbToolsRule,
+} from "./host/opencode-config.ts";
 export { experimental_providerBridge } from "./host/provider-bridge.ts";
 export { sessionFromParams } from "./host/session-manager.ts";
 export { sessions } from "./host/types.ts";
@@ -163,6 +170,21 @@ export default experimental_defineHostEntry({
     async setModelSettings(input, context) {
       openCodeServer.setDataDir(context.experimental_paths.dataDir);
       await openCodeServer.writeModelSettings(input);
+      // Best-effort: a config we cannot edit only leaves BB tools visible
+      // to OpenCode's own sessions, where calling them is refused anyway.
+      await syncBbToolsRule(
+        input.hideBbToolsOutsideBb !== false,
+        undefined,
+        join(context.experimental_paths.dataDir, "opencode2-config-edit.json"),
+      )
+        .then((result) => {
+          if (result !== "unchanged") openCodeServer.reloadConfigWhenIdle();
+        })
+        .catch((error) =>
+          process.stderr.write(
+            `[opencode2] Could not update OpenCode's global config: ${error instanceof Error ? error.message : String(error)}\n`,
+          ),
+        );
       for (const session of sessions.values()) {
         session.disableSubagents = input.disableSubagents !== false;
         session.enabledModels =

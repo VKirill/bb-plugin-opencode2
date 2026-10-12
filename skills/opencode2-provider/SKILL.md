@@ -38,6 +38,12 @@ the plugin settings page or `saveSettings` with the full object:
   `subagent` tool is denied and hidden; delegate with BB threads instead.
   When `false`, OpenCode subagents render as BB delegation rows.
 
+- `hideBbToolsOutsideBb` (default `true`): keeps one
+  `bb_opencode2_*` deny rule at the end of `permissions` in the host's global
+  OpenCode config, so OpenCode's own sessions don't list BB threads' tools.
+  Turning it off removes the rule (restoring the file exactly if untouched).
+  OpenCode applies config changes on its next idle location reload.
+
 Settings apply from the next turn.
 
 ## Behavior to expect

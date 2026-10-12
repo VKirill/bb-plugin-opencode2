@@ -308,6 +308,17 @@ export function SettingsSection() {
               if (settings) void save({ ...settings, disableSubagents: !next });
             }}
           />
+          <SettingRow
+            title="Keep BB tools inside BB"
+            description="OpenCode shares MCP servers across a directory, so its own sessions (TUI, web) would list BB threads' tools. Adds one deny rule for bb_opencode2_* to your global OpenCode config; turning this off removes it."
+            checked={settings?.hideBbToolsOutsideBb !== false}
+            disabled={busy}
+            label="Keep BB tools inside BB"
+            onCheckedChange={(next) => {
+              if (settings)
+                void save({ ...settings, hideBbToolsOutsideBb: next });
+            }}
+          />
         </div>
       </div>
 

@@ -16,6 +16,7 @@ test("normalizes legacy and malformed model settings", () => {
       providerEnabled: false,
       enabledModels: ["openai/gpt-5"],
       disableSubagents: true,
+      hideBbToolsOutsideBb: true,
     },
   );
 });

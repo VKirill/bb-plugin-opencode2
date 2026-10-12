@@ -37,6 +37,9 @@ const MODEL_CATALOG_TTL_MS = 60_000;
 const MCP_CONNECT_TIMEOUT_MS = 10_000;
 const MCP_CONNECT_POLL_MS = 150;
 const MCP_SETTLE_MS = 1_000;
+const CONFIG_RELOAD_RETRY_MS = 30_000;
+// Give up after a day of continuous activity; a service restart applies it.
+const CONFIG_RELOAD_MAX_ATTEMPTS = 2_880;
 const RECONCILE_INTERVAL_MS = 30_000;
 const RECONCILE_MIN_TURN_AGE_MS = 10_000;
 const RECONCILE_SETTLE_MS = 5_000;
@@ -589,6 +592,48 @@ export class OpenCodeServer {
       `[opencode2] BB tool server ${serverName} did not connect within ${timeoutMs} ms (last status: ${last})\n`,
     );
     return false;
+  }
+
+  private reloadTimer?: ReturnType<typeof setTimeout>;
+
+  /**
+   * OpenCode reads its global config once; a changed file takes effect on the
+   * next location reload. A reload cancels every pending approval and
+   * question service-wide, so only do it while OpenCode is idle (nothing
+   * pending, no running session) and otherwise try again later.
+   */
+  reloadConfigWhenIdle(attempt = 0) {
+    if (this.reloadTimer) clearTimeout(this.reloadTimer);
+    this.reloadTimer = undefined;
+    void (async () => {
+      try {
+        const [permissions, forms, active] = await Promise.all([
+          this.request("/api/permission/request"),
+          this.request("/api/form"),
+          this.request("/api/session/active"),
+        ]);
+        const busy =
+          (Array.isArray(permissions.data) && permissions.data.length > 0) ||
+          (Array.isArray(forms.data) && forms.data.length > 0) ||
+          Object.keys(inputRecord(active.data)).length > 0;
+        if (!busy) {
+          // A location whose directory was deleted makes the reload report
+          // 503, but every other location still reloads.
+          await this.request("/api/location/reload", { method: "POST" }).catch(
+            () => {},
+          );
+          return;
+        }
+      } catch {
+        // Service unreachable; retry below.
+      }
+      if (attempt + 1 >= CONFIG_RELOAD_MAX_ATTEMPTS) return;
+      this.reloadTimer = setTimeout(
+        () => this.reloadConfigWhenIdle(attempt + 1),
+        CONFIG_RELOAD_RETRY_MS,
+      );
+      this.reloadTimer.unref();
+    })();
   }
 
   async nativeSkillNames(cwd: string) {

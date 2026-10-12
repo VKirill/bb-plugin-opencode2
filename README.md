@@ -77,6 +77,15 @@ Open the plugin settings page in BB (Settings → OpenCode v2).
 - **Show in the provider picker** enables or hides the provider.
 - **Allow OpenCode subagents** lets OpenCode use its native subagents (off by
   default).
+- **Keep BB tools inside BB** (on by default). OpenCode shares MCP servers
+  across a directory, so your own OpenCode sessions (TUI, web) would
+  otherwise list BB threads' tools. This adds one rule,
+  `{ "action": "bb_opencode2_*", "resource": "*", "effect": "deny" }`, at the
+  end of `permissions` in your global `~/.config/opencode/opencode.json`,
+  and changes nothing else. OpenCode applies it at its next idle moment.
+  Turning the setting off restores the file byte-for-byte if you haven't
+  edited it since, or removes just that rule if you have. BB threads are
+  unaffected: each allows its own tools in its session rules.
 - **Models** controls the allowlist, grouped by OpenCode provider.
 
 Settings apply from the next turn. See

@@ -47,6 +47,9 @@ export const modelSettingsSchema = z
     // use BB for delegation instead. Missing key defaults to true so older
     // stored settings migrate to the safer default.
     disableSubagents: z.boolean().default(true),
+    // Add one deny rule to OpenCode's global config so OpenCode's own
+    // sessions (TUI, web) don't list BB threads' tools. On by default.
+    hideBbToolsOutsideBb: z.boolean().default(true),
   })
   .strict();
 
