@@ -105,7 +105,10 @@ export function metadataFileChanges(metadata: unknown, cwd: string) {
         : entry.status === "deleted"
           ? "delete"
           : "update";
-    const patch = stringValue(entry.patch);
+    // Patch headers repeat OpenCode's own spelling of the path, which can
+    // climb out through a symlinked cwd; show the workspace path instead.
+    const raw = stringValue(entry.patch);
+    const patch = raw && path !== file ? raw.split(file).join(path) : raw;
     return [{ path, kind, ...(patch ? { diff: patch } : {}) }];
   });
 }

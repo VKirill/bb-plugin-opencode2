@@ -194,6 +194,21 @@ test("builds file-change rows from OpenCode's edit metadata patches", () => {
     ],
   );
   assert.deepEqual(metadataFileChanges({ truncated: false }, "/repo"), []);
+  assert.deepEqual(
+    metadataFileChanges(
+      {
+        files: [
+          {
+            file: "/repo/a.ts",
+            patch: "--- /repo/a.ts\n+++ /repo/a.ts\n",
+            status: "modified",
+          },
+        ],
+      },
+      "/repo",
+    ),
+    [{ path: "a.ts", kind: "update", diff: "--- a.ts\n+++ a.ts\n" }],
+  );
 });
 
 test("reports touched files relative to the workspace", () => {

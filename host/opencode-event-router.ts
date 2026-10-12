@@ -359,6 +359,9 @@ export class OpenCodeEventRouter {
       event.type === "session.tool.failed"
     ) {
       this.stopShellOutput(active, eventId);
+      active.finishedTools ??= new Set();
+      if (active.finishedTools.has(eventId)) return;
+      active.finishedTools.add(eventId);
       // handleQuestion may already have closed + answered this call.
       if (active.settledTools.has(eventId)) {
         active.settledTools.delete(eventId);
