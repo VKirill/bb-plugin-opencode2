@@ -51,9 +51,10 @@ test("disabled subagents are denied last and BB's own tool server is allowed", (
     permissionMode: "accept-edits",
     disableSubagents: true,
     dynamicToolServer: "bb_opencode2_abc",
+    dynamicToolNames: ["bb_echo"],
   });
   assert.deepEqual(rules.slice(-3), [
-    { action: "bb_opencode2_abc*", resource: "*", effect: "allow" },
+    { action: "bb_opencode2_abc_bb_echo", resource: "*", effect: "allow" },
     { action: "subagent", resource: "*", effect: "deny" },
     { action: "task", resource: "*", effect: "deny" },
   ]);

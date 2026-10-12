@@ -206,10 +206,8 @@ export async function ensureSessionPermissions(
   const rules = sessionPermissionRules({
     permissionMode,
     disableSubagents: session.disableSubagents,
-    dynamicToolServer:
-      session.dynamicTools.length > 0
-        ? dynamicMcpServerName(session.providerThreadId)
-        : undefined,
+    dynamicToolServer: dynamicMcpServerName(session.providerThreadId),
+    dynamicToolNames: session.dynamicTools.map((tool) => tool.name),
   });
   const key = JSON.stringify(rules);
   if (session.appliedPermissions === key) {

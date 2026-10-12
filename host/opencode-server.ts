@@ -33,6 +33,8 @@ const MCP_REGISTRY_FILE = "opencode2-mcp-registry.json";
 const SESSION_REGISTRY_FILE = "opencode2-session-registry.json";
 
 const MODEL_CATALOG_TTL_MS = 60_000;
+const MODEL_CATALOG_COLD_RETRIES = 10;
+const MODEL_CATALOG_COLD_RETRY_MS = 300;
 
 export type OpenCodeModelCatalog = {
   models: RecordValue[];
@@ -457,18 +459,28 @@ export class OpenCodeServer {
       return cached.result;
     const result = (async () => {
       const query = locationQuery(cwd);
-      const [list, fallback] = await Promise.all([
-        this.request(`/api/model?${query}`),
-        this.request(`/api/model/default?${query}`).catch(() => ({})),
-      ]);
-      const models = (Array.isArray(list.data) ? list.data : [])
-        .map(inputRecord)
-        .filter(
-          (model) =>
-            model.enabled !== false &&
-            stringValue(model.providerID) !== undefined &&
-            stringValue(model.id) !== undefined,
-        );
+      // A location OpenCode has not loaded yet answers with an empty list
+      // for a few hundred milliseconds, so retry briefly before trusting it.
+      let models: RecordValue[] = [];
+      for (let attempt = 0; attempt < MODEL_CATALOG_COLD_RETRIES; attempt++) {
+        if (attempt > 0)
+          await new Promise((resolve) =>
+            setTimeout(resolve, MODEL_CATALOG_COLD_RETRY_MS),
+          );
+        const list = await this.request(`/api/model?${query}`);
+        models = (Array.isArray(list.data) ? list.data : [])
+          .map(inputRecord)
+          .filter(
+            (model) =>
+              model.enabled !== false &&
+              stringValue(model.providerID) !== undefined &&
+              stringValue(model.id) !== undefined,
+          );
+        if (models.length > 0) break;
+      }
+      const fallback = await this.request(`/api/model/default?${query}`).catch(
+        () => ({}),
+      );
       const defaultModel = inputRecord(inputRecord(fallback).data);
       const defaultId =
         stringValue(defaultModel.providerID) && stringValue(defaultModel.id)
@@ -486,10 +498,13 @@ export class OpenCodeServer {
       };
     })();
     this.modelCatalogs.set(cwd, { at: Date.now(), result });
-    result.catch(() => {
+    const forget = () => {
       if (this.modelCatalogs.get(cwd)?.result === result)
         this.modelCatalogs.delete(cwd);
-    });
+    };
+    result.then((catalog) => {
+      if (catalog.models.length === 0) forget();
+    }, forget);
     return result;
   }
 

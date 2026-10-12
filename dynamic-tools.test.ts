@@ -304,7 +304,7 @@ test("MCP exposes only configured tools, requires OpenCode's session metadata, a
       params: {
         name: "lookup_weather",
         arguments: { city: "Oslo" },
-        _meta: { sessionID: "oc_session_1" },
+        _meta: { "ai.opencode/sessionID": "oc_session_1" },
       },
     },
     write,

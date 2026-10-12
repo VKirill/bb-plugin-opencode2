@@ -1,27 +1,29 @@
 # OpenCode v2 provider — stabilization and full bb feature plan
 
-Status: **in progress, working tree mid-edit (does not typecheck yet).**
+Status: **Phase 1 done and committed on `main`. Next: Phase 2.**
 Last updated: 2026-10-12. Targets: bb 0.46.0 (Plugin SDK 0.6.37), OpenCode v2.0.27.
 
 ## 0. Resume checklist (read first)
 
-1. The uncommitted changes listed in §3 are partial. `npm run typecheck` will
-   fail until §4 Phase 1 is finished (for example, `mapModel(model, index)`
-   callers still pass an index, and `forkBoundaryRetainingThrough` now returns
-   `{ before? }`).
-2. Finish Phase 1, then run `npm run format && npm run check`.
-3. The live recordings and the extracted route table were written to
-   `/tmp/claude-501/ocrec/` (`run1..4.ndjson`, `routes.txt`, `record.mjs`,
-   `routes.py`). `/tmp` may have been cleared. The facts that matter are copied
-   into §2, so you don't need the recordings to continue.
-4. Talking to the live service. `opencode2 service status` prints the URL
-   (currently `http://127.0.0.1:49374`). Basic auth uses `opencode:<password>`
-   from `~/.config/opencode/service.json`. Sandboxed shells can't reach it, so
-   run those commands unsandboxed. Every location-scoped route needs
+1. Work on `main` and commit after each verified step (user preference; no
+   branches).
+2. Phase 1 is committed. Continue with §4 Phase 2, in order.
+3. Live smoke harness: `/tmp/claude-501/smoke/harness.mjs` plays the bb
+   runtime against `dist/host.js`, and `s1.mjs` is the Phase 1 scenario.
+   Run both unsandboxed, because the OpenCode service isn't reachable from
+   the sandbox. `cleanup.mjs <dist/host.js> <ws>` removes leftover
+   `bb_opencode2_*` MCP servers and test sessions. `/tmp` may be wiped; if
+   so, recreate the harness. It handles `interaction/request` and
+   `item/tool/call`, uses `creq_` + 10-char client request IDs, and sends the
+   full permission policy (`permissionScope`, `approvalReviewer`,
+   `permissionEscalation`).
+4. Talking to the live service: `opencode2 service status` prints the URL.
+   Basic auth uses `opencode:<password>` from
+   `~/.config/opencode/service.json`. Every location-scoped route needs
    `?location[directory]=<cwd>`.
 5. For cheap live tests, use the free model `opencode/space-bunny-free`
-   (variants none/low/medium/high/xhigh) or `opencode/mimo-v2.6-flash-free`
-   (no variants). Always delete any scratch sessions afterwards.
+   (variants low/medium/high/xhigh/max) or `opencode/mimo-v2.6-flash-free`
+   (no variants). Always delete scratch sessions.
 
 ## 1. Assessment: how ready was it?
 
@@ -182,98 +184,46 @@ feed back to the model.
 - `session.compaction.started{reason:auto|manual}`, `.delta`, and `.ended`
   (handled already).
 
-## 3. Done so far (uncommitted)
+## 3. Done
 
-- SDK repinned to 0.6.37 with `bb plugin types` and moved into
-  `dependencies`, as the provider docs require. `engines.bbPluginSdk` is now
-  `>=0.6.37`. Install with `npm install --cache "$TMPDIR/npm-cache"` (the
-  default cache is blocked by the sandbox). The old tests passed on 0.6.37
-  before the edits below.
-- `host/opencode-requests.ts`:
-  - `locationQuery()`.
-  - MCP routes moved to `/api/experimental/mcp` (B1).
-  - Instructions moved to `/api/experimental/...`, and empty instructions now
-    DELETE the entry (B2).
-  - New `sessionPermissionRules()`, `sessionPermissionsRequest()`, and
-    `sessionRenameRequest()`.
-  - `forkBoundaryRetainingThrough()` now returns `{before?}` (B7).
-- `host/opencode-server.ts`:
-  - Revert clear is now `DELETE .../revert` (B4), and message pagination
-    stops on an empty page.
-  - `readModelSettings(providerOptions?)` reads
-    `providerOptions.modelSettings` first, then its own dataDir, then the
-    sibling `../host-data/` (B12).
-  - `modelCatalog(cwd)` (60 s cache, includes the default model) and
-    `lookupModel()`.
-  - The skills route uses `locationQuery`.
-- `host/provider-bridge.ts`:
-  - The fork body now sends `boundary` directly (it's the `{before}` object).
-  - The thread start/resume/fork settings reads now pass
-    `params.options?.providerOptions`. Prettier formatting is still pending.
-- `host/opencode-interactions.ts`: permission reply uses
-  `permissionReplyBody(decision)` (B6), and form cancel uses `DELETE` (B5).
-- `host/prompt.ts`: `PERMISSION_DENIED_MESSAGE` and `permissionReplyBody()`.
-  A reject sends a message so the agent can continue; verify this live.
-- `host/session-manager.ts`:
-  - `dynamicMcpServerName` is exported.
-  - `installSessionInstructions` tolerates a DELETE 404.
-  - New `ensureSessionPermissions(session, mode)`, called in
-    `registerSession` (B9, B10).
-  - `ensureSessionModel` resolves variants through the catalog and records
-    `session.contextWindow` (B14).
-- `host/models.ts`: `modelCatalogEntry()`, `resolveModelVariant()`, and the
-  alias map (minimal→low, thinking→high, only when no native level exists).
-  `mapModel(model, isDefault)` changed signature, and the default effort now
-  prefers `medium`.
-- `host/types.ts`: `SessionState` gained `appliedPermissions`,
-  `contextWindow`, and `agent`.
+### Phase 1 (committed)
+
+- SDK repinned to 0.6.37 as a runtime dependency.
+- Fixed B1–B14 (see §1).
+- Permission modes are now session rulesets. bb tools are allowed by their
+  exact `<server>_<tool>` action names, because OpenCode doesn't glob
+  actions.
+- A deny sends a reject with a message. Verified live: the agent continues
+  instead of the turn aborting.
+- Settings travel through `deriveProviderOptions`. `model/list` and health
+  read the host-data copy.
+- Model catalog:
+  - OpenCode's real default model.
+  - Variant aliases (minimal→low, thinking→high).
+  - No phantom variants are sent.
+  - Each model's context limit is stored.
+  - A cold location answers `[]` for about 400 ms, so the catalog retries
+    and never caches an empty result.
+- Plan mode: `composerActions: ["plan"]`, the `plan` agent is selected per
+  turn, and the `/plan` mention is stripped from the prompt.
+- MCP proxy: OpenCode v2 sends the session as
+  `_meta["ai.opencode/sessionID"]`. Every bb dynamic tool call was being
+  rejected before this fix.
+- Shell exit codes come from `metadata.exit`, and a non-zero exit marks the
+  row failed.
+- Tests: `opencode-v2-contract.test.ts`, plus the updated old tests.
+- Verified live, end to end:
+  - model list
+  - start (instructions honored, MCP registered)
+  - accept-edits approval allow and deny
+  - edit auto-allowed
+  - exit code 4
+  - bb dynamic tool round trip
+  - rename
+  - fork at checkpoint
+  - discard with no MCP leak
 
 ## 4. Remaining work
-
-### Phase 1: make it work (finish first, then commit)
-
-1. **provider-bridge.ts `model/list`.** Use
-   `openCodeServer.modelCatalog(cwd, true)`. Filter by settings. Mark
-   `isDefault` for `catalog.defaultId`; if that is absent or filtered out,
-   mark the first model.
-2. **host.ts `listModels`.** Switch it to the same catalog. That fixes the
-   `?directory=` bug (B8) in the settings UI path too.
-3. **`thread/name/set`.** Use `sessionRenameRequest()` (B3).
-4. **`turn/start` and `turn/steer`.**
-   - Re-read settings from `params.options.providerOptions`, and update
-     `session.disableSubagents` and `session.enabledModels`.
-   - Call `ensureSessionPermissions(session, parsePermissionMode(params.options.permissionMode) ?? session.permissionMode)`.
-   - Call `ensureSessionAgent` (Phase 2 §7) before the model switch and the
-     prompt.
-5. **server.ts.**
-   - Add `deriveProviderOptions: () => ({ modelSettings })`.
-   - Keep the host sync loop, because `model/list` and `health` still need the
-     host-data file.
-6. **Router exit code (B11).** In `opencode-event-router.ts`, read
-   `metadata.exit` (number) first, then `data.exitCode`, then
-   `/Exited with code (\d+)/` in the content. Treat non-zero as `failed`
-   status for command rows.
-7. **Shell tool name.** `toolRow` already maps `shell`. Make sure `path` is
-   read for read/edit/write (`firstInputString` already includes `path`).
-8. **Tests.** Update `tool-mapping.test.ts`:
-   - Fork boundaries now look like `{before}` / `{}`.
-   - Permission rules.
-   - `permissionReplyBody`.
-   - `mapModel(isDefault)`.
-   - `modelCatalogEntry` and `resolveModelVariant`.
-   - Exit-code parsing.
-
-   Then run `npm run format && npm run check`.
-
-9. **Live smoke test.** Run the bridge against the real service with a free
-   model: start, a turn with shell+edit, accept-edits approval allow and deny,
-   rename, fork at checkpoint, rewind, compact, discard. Also confirm:
-   - The bb dynamic-tool MCP action name matches the `${server}*` allow rule.
-     Inspect `permission.asked.action` for an MCP tool call under
-     accept-edits.
-   - Reject with a message continues the turn rather than aborting it.
-10. **Commit.** Message: "Fix OpenCode v2.0.27 API drift, enforce permission
-    modes, repin SDK 0.6.37".
 
 ### Phase 2: full bb feature set
 

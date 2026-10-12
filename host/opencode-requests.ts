@@ -94,6 +94,7 @@ export function sessionPermissionRules(input: {
   permissionMode?: string;
   disableSubagents: boolean;
   dynamicToolServer?: string;
+  dynamicToolNames?: readonly string[];
 }): PermissionRule[] {
   const rules: PermissionRule[] = [];
   if (input.permissionMode === "accept-edits") {
@@ -109,12 +110,15 @@ export function sessionPermissionRules(input: {
   } else if (input.permissionMode === "full") {
     rules.push({ action: "*", resource: "*", effect: "allow" });
   }
+  // OpenCode names an MCP tool's permission action `<server>_<tool>` and
+  // matches actions exactly, so each BB tool needs its own rule.
   if (input.dynamicToolServer)
-    rules.push({
-      action: `${input.dynamicToolServer}*`,
-      resource: "*",
-      effect: "allow",
-    });
+    for (const tool of input.dynamicToolNames ?? [])
+      rules.push({
+        action: `${input.dynamicToolServer}_${tool}`,
+        resource: "*",
+        effect: "allow",
+      });
   if (input.disableSubagents)
     rules.push(
       { action: "subagent", resource: "*", effect: "deny" },
