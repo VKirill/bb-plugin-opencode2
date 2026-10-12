@@ -190,8 +190,8 @@ feed back to the model.
 - SDK repinned to 0.6.37 as a runtime dependency.
 - Fixed B1–B14 (see §1).
 - Permission modes are now session rulesets. bb tools are allowed by their
-  exact `<server>_<tool>` action names, because OpenCode doesn't glob
-  actions.
+  exact `<server>_<tool>` action names, and other threads' tool servers are hidden
+  (OpenCode globs actions; MCP servers are per directory, not per session).
 - A deny sends a reject with a message. Verified live: the agent continues
   instead of the turn aborting.
 - Settings travel through `deriveProviderOptions`. `model/list` and health

@@ -21,9 +21,11 @@ export function locationQuery(cwd: string) {
   return `location[directory]=${encodeURIComponent(cwd)}`;
 }
 
+export const DYNAMIC_MCP_SERVER_PREFIX = "bb_opencode2_";
+
 /** Per-session name of the MCP server that exposes BB dynamic tools. */
 export function dynamicMcpServerName(providerThreadId: string) {
-  return `bb_opencode2_${createHash("sha256").update(providerThreadId).digest("hex").slice(0, 20)}`;
+  return `${DYNAMIC_MCP_SERVER_PREFIX}${createHash("sha256").update(providerThreadId).digest("hex").slice(0, 20)}`;
 }
 
 /** OpenCode v2 adds and removes runtime MCP servers under `experimental`. */
@@ -117,15 +119,22 @@ export function sessionPermissionRules(input: {
   } else if (input.permissionMode === "full") {
     rules.push({ action: "*", resource: "*", effect: "allow" });
   }
-  // OpenCode names an MCP tool's permission action `<server>_<tool>` and
-  // matches actions exactly, so each BB tool needs its own rule.
-  if (input.dynamicToolServer)
-    for (const tool of input.dynamicToolNames ?? [])
-      rules.push({
-        action: `${input.dynamicToolServer}_${tool}`,
-        resource: "*",
-        effect: "allow",
-      });
+  // OpenCode registers MCP servers per directory, not per session, so every
+  // OpenCode thread in a checkout sees every other thread's BB tool server.
+  // Hide them all (a deny removes the tools from the model's catalog), then
+  // allow this session's own server. MCP permission actions are
+  // `<server>_<tool>`, and rules match globs with the last match winning.
+  rules.push({
+    action: `${DYNAMIC_MCP_SERVER_PREFIX}*`,
+    resource: "*",
+    effect: "deny",
+  });
+  if (input.dynamicToolServer && input.dynamicToolNames?.length)
+    rules.push({
+      action: `${input.dynamicToolServer}_*`,
+      resource: "*",
+      effect: "allow",
+    });
   if (input.disableSubagents)
     rules.push(
       { action: "subagent", resource: "*", effect: "deny" },

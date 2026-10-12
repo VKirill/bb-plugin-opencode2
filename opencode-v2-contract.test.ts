@@ -42,27 +42,39 @@ test("accept-edits asks for everything except reads, searches, and edits", () =>
 
 test("full mode allows everything and auto keeps OpenCode's agent rules", () => {
   assert.deepEqual(
-    sessionPermissionRules({ permissionMode: "full", disableSubagents: false }),
-    [{ action: "*", resource: "*", effect: "allow" }],
+    sessionPermissionRules({
+      permissionMode: "full",
+      disableSubagents: false,
+    })[0],
+    { action: "*", resource: "*", effect: "allow" },
   );
   assert.deepEqual(
     sessionPermissionRules({ permissionMode: "auto", disableSubagents: false }),
-    [],
+    [{ action: "bb_opencode2_*", resource: "*", effect: "deny" }],
   );
 });
 
-test("disabled subagents are denied last and BB's own tool server is allowed", () => {
+test("each session sees only its own BB tool server, and subagents are denied", () => {
   const rules = sessionPermissionRules({
     permissionMode: "accept-edits",
     disableSubagents: true,
     dynamicToolServer: "bb_opencode2_abc",
     dynamicToolNames: ["bb_echo"],
   });
-  assert.deepEqual(rules.slice(-3), [
-    { action: "bb_opencode2_abc_bb_echo", resource: "*", effect: "allow" },
+  assert.deepEqual(rules.slice(-4), [
+    { action: "bb_opencode2_*", resource: "*", effect: "deny" },
+    { action: "bb_opencode2_abc_*", resource: "*", effect: "allow" },
     { action: "subagent", resource: "*", effect: "deny" },
     { action: "task", resource: "*", effect: "deny" },
   ]);
+  // Without BB tools, other threads' servers are still hidden.
+  assert.deepEqual(
+    sessionPermissionRules({ permissionMode: "full", disableSubagents: false }),
+    [
+      { action: "*", resource: "*", effect: "allow" },
+      { action: "bb_opencode2_*", resource: "*", effect: "deny" },
+    ],
+  );
 });
 
 test("session updates use PATCH /api/session/:id", () => {
