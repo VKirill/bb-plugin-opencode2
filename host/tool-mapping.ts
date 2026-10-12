@@ -371,24 +371,22 @@ export function toolRow(name: string, rawInput: unknown, cwd: string) {
   }
 
   if (isSubagentTool(name)) {
-    const title = presentationTitle(
-      firstInputString(input, [
-        "description",
-        "prompt",
-        "subagent_type",
-        "agent",
-        "task",
-      ]) ?? "",
-    );
+    // Rendered as BB's native delegation row. The router fills in the child
+    // session once OpenCode reports it; until then the call ID stands in.
+    const agent = firstInputString(input, ["agent", "subagent_type"]);
+    const description = firstInputString(input, [
+      "description",
+      "prompt",
+      "task",
+    ]);
     return {
-      item: { type: "tool", tool: name, args: input },
-      presentation: {
-        icon: { glyph: "Toolbox" },
-        label: {
-          pending: "Launching subagent",
-          completed: "Launched subagent",
-        },
-        ...(title ? { title } : {}),
+      item: {
+        type: "delegation",
+        childRef: "pending",
+        label:
+          [agent, description].filter(Boolean).join(": ") ||
+          "OpenCode subagent",
+        background: false,
       },
     };
   }

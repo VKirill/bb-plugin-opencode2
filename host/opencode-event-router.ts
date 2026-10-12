@@ -150,11 +150,31 @@ function retryErrorCategory(error: RecordValue) {
   return undefined;
 }
 
+const CHILD_EVENT_PATTERN =
+  /^(permission\.asked|session\.(text|reasoning|tool)\.)/;
+
+/** The subagent's final report, without OpenCode's wrapper tag. */
+export function subagentSummary(text: string): string {
+  return text
+    .replace(/^\s*<subagent\b[^>]*>\s*/, "")
+    .replace(/\s*<\/subagent>\s*$/, "")
+    .trim();
+}
+
 export class OpenCodeEventRouter {
   private readonly interactions: OpenCodeInteractions;
   private readonly emitTimeline: typeof emit;
   private readonly sessionLookup: ReadonlyMap<string, SessionState>;
   private readonly request: RequestOpenCode;
+  /** Native subagent sessions, routed into their parent BB turn. */
+  private readonly childSessions = new Map<
+    string,
+    { parent: SessionState; callId: string }
+  >();
+  /** Provider item ID -> the delegation call it is nested under. */
+  private readonly parentRefs = new Map<string, string>();
+  /** Set while handling a child-session event. */
+  private childParentRef?: string;
 
   constructor(
     request: RequestOpenCode,
@@ -162,17 +182,60 @@ export class OpenCodeEventRouter {
     sessionLookup: ReadonlyMap<string, SessionState> = sessionsByProviderId,
   ) {
     this.request = request;
-    this.interactions = new OpenCodeInteractions(request);
     this.emitTimeline = emitTimeline;
+    this.interactions = new OpenCodeInteractions(request, this.emit);
     this.sessionLookup = sessionLookup;
   }
+
+  /**
+   * Emit deltas, nesting items that belong to a native subagent under its
+   * delegation row. An item first opened while handling a child-session
+   * event records its parent; later deltas for it (output, close, turn-end
+   * cleanup) reuse that parent wherever they are emitted from.
+   */
+  private readonly emit = (threadId: string, deltas: RecordValue[]) => {
+    this.emitTimeline(
+      threadId,
+      deltas.map((delta) => {
+        const key = inputRecord(delta.key);
+        const id = stringValue(key.providerItemId);
+        if (!id) return delta;
+        if (
+          delta.kind === "item.open" &&
+          this.childParentRef &&
+          !this.parentRefs.has(id)
+        )
+          this.parentRefs.set(id, this.childParentRef);
+        const parentRef = this.parentRefs.get(id);
+        return parentRef ? { ...delta, key: { ...key, parentRef } } : delta;
+      }),
+    );
+  };
 
   async handleEvent(event: RecordValue): Promise<void> {
     const data = inputRecord(event.data);
     const sessionId = stringValue(data.sessionID);
     if (!sessionId) return;
     const session = this.sessionLookup.get(sessionId);
-    if (!session) return;
+    if (session) return this.handleSessionEvent(session, event, data);
+    const child = this.childSessions.get(sessionId);
+    const type = stringValue(event.type) ?? "";
+    // A subagent's own lifecycle, usage, and compaction belong to the child
+    // session; only its visible work joins the parent turn.
+    if (!child || !CHILD_EVENT_PATTERN.test(type)) return;
+    this.childParentRef = child.callId;
+    try {
+      await this.handleSessionEvent(child.parent, event, data);
+    } finally {
+      this.childParentRef = undefined;
+    }
+  }
+
+  private async handleSessionEvent(
+    session: SessionState,
+    event: RecordValue,
+    data: RecordValue,
+  ): Promise<void> {
     const active = session.active;
     if (event.type === "permission.asked") {
       void this.interactions.handlePermission(session, data);
@@ -195,7 +258,7 @@ export class OpenCodeEventRouter {
     if (event.type === "session.text.started" && textPartId) {
       const item = { type: "agentMessage", text: "" };
       active.opened.set(textPartId, item);
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "item.open",
           key: itemKey(textPartId, "agentMessage"),
@@ -209,7 +272,7 @@ export class OpenCodeEventRouter {
       textPartId &&
       typeof data.delta === "string"
     ) {
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "item.textDelta",
           key: itemKey(textPartId, "agentMessage"),
@@ -230,7 +293,7 @@ export class OpenCodeEventRouter {
       };
       item.text = data.text;
       active.opened.delete(textPartId);
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "item.textClose",
           key: itemKey(textPartId, "agentMessage"),
@@ -254,7 +317,7 @@ export class OpenCodeEventRouter {
     if (event.type === "session.reasoning.started" && reasoningPartId) {
       const item = { type: "reasoning", summary: [], content: [] };
       active.opened.set(reasoningPartId, item);
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "item.open",
           key: itemKey(reasoningPartId, "reasoningText"),
@@ -268,7 +331,7 @@ export class OpenCodeEventRouter {
       reasoningPartId &&
       typeof data.delta === "string"
     ) {
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "item.textDelta",
           key: itemKey(reasoningPartId, "reasoningText"),
@@ -290,7 +353,7 @@ export class OpenCodeEventRouter {
       };
       item.content = [data.text];
       active.opened.delete(reasoningPartId);
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "item.textClose",
           key: itemKey(reasoningPartId, "reasoningText"),
@@ -322,12 +385,14 @@ export class OpenCodeEventRouter {
           data.input ?? parseInputText(active.pendingInput.get(eventId)),
         );
         const row = sessionToolRow(session, name, input);
+        if (row.item.type === "delegation")
+          (row.item as RecordValue).childRef = eventId;
         active.opened.set(eventId, row.item);
         const touched = touchedPaths(name, input);
         if (touched.length) active.touchedFiles.set(eventId, touched);
         active.pendingTools.delete(eventId);
         active.pendingInput.delete(eventId);
-        this.emitTimeline(session.bbThreadId, [
+        this.emit(session.bbThreadId, [
           {
             kind: "item.open",
             key: itemKey(eventId, "tool"),
@@ -350,6 +415,12 @@ export class OpenCodeEventRouter {
       }
     }
     if (event.type === "session.tool.progress") {
+      const childId = stringValue(inputRecord(data.metadata).sessionID);
+      const opened = active.opened.get(eventId);
+      if (childId && opened?.type === "delegation") {
+        opened.childRef = childId;
+        this.childSessions.set(childId, { parent: session, callId: eventId });
+      }
       const shellId = stringValue(inputRecord(data.metadata).shellID);
       if (shellId && active.opened.get(eventId)?.type === "command")
         this.streamShellOutput(session, active, eventId, shellId);
@@ -380,13 +451,15 @@ export class OpenCodeEventRouter {
       let item = active.opened.get(eventId);
       if (!item) {
         const row = sessionToolRow(session, name, input);
+        if (row.item.type === "delegation")
+          (row.item as RecordValue).childRef = eventId;
         item = row.item;
         active.opened.set(eventId, item);
         const touched = touchedPaths(name, input);
         if (touched.length) active.touchedFiles.set(eventId, touched);
         active.pendingTools.delete(eventId);
         active.pendingInput.delete(eventId);
-        this.emitTimeline(session.bbThreadId, [
+        this.emit(session.bbThreadId, [
           {
             kind: "item.open",
             key: itemKey(eventId, "tool"),
@@ -397,7 +470,19 @@ export class OpenCodeEventRouter {
         ]);
       }
       const output = contentText(data.content);
-      if (item.type === "tool") {
+      if (item.type === "delegation") {
+        item.summary =
+          event.type === "session.tool.success"
+            ? subagentSummary(output)
+            : toolFailureError(
+                name,
+                session.disableSubagents,
+                stringValue(inputRecord(data.error).message),
+              );
+        if (!item.summary) delete item.summary;
+        const childId = stringValue(inputRecord(data.metadata).sessionID);
+        if (childId) item.childRef = childId;
+      } else if (item.type === "tool") {
         if (event.type === "session.tool.success") item.result = output;
         else {
           const error = inputRecord(data.error);
@@ -420,7 +505,7 @@ export class OpenCodeEventRouter {
             : (exitCode ?? 1);
       }
       active.opened.delete(eventId);
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "item.close",
           key: itemKey(eventId, "tool"),
@@ -465,17 +550,14 @@ export class OpenCodeEventRouter {
         active.lastStepTokens = inputRecord(data.tokens);
     }
     if (event.type === "session.usage.updated") {
-      this.emitTimeline(
-        session.bbThreadId,
-        usageDeltas(session, active, data.tokens),
-      );
+      this.emit(session.bbThreadId, usageDeltas(session, active, data.tokens));
     }
     if (event.type === "session.retry.scheduled") {
       const error = inputRecord(data.error);
       const attempt =
         typeof data.attempt === "number" ? ` (attempt ${data.attempt})` : "";
       const category = retryErrorCategory(error);
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "provider.error",
           message: `${stringValue(error.message) ?? "OpenCode model request failed"}. Retrying${attempt}.`,
@@ -538,7 +620,7 @@ export class OpenCodeEventRouter {
       if (itemId && !active.opened.has(itemId)) {
         const item = { type: "compaction" };
         active.opened.set(itemId, item);
-        this.emitTimeline(session.bbThreadId, [
+        this.emit(session.bbThreadId, [
           {
             kind: "item.open",
             key: itemKey(itemId, "compaction"),
@@ -566,7 +648,7 @@ export class OpenCodeEventRouter {
         eventType === "session.compacted");
     if (manual && manualCompaction) {
       active.opened.delete(manualCompaction.itemId);
-      this.emitTimeline(
+      this.emit(
         session.bbThreadId,
         manualCompactionOutcomeDeltas({
           providerTurnId: active.providerTurnId,
@@ -589,7 +671,7 @@ export class OpenCodeEventRouter {
       const item = active.opened.get(itemId);
       if (item) {
         active.opened.delete(itemId);
-        this.emitTimeline(session.bbThreadId, [
+        this.emit(session.bbThreadId, [
           {
             kind: "item.close",
             key: itemKey(itemId, "compaction"),
@@ -602,7 +684,7 @@ export class OpenCodeEventRouter {
       }
     }
     if (isCompleted)
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         { kind: "context.compacted", providerTurnId: active.providerTurnId },
       ]);
     return true;
@@ -638,7 +720,7 @@ export class OpenCodeEventRouter {
             typeof output.output === "string" &&
             output.output.length > 0
           ) {
-            this.emitTimeline(session.bbThreadId, [
+            this.emit(session.bbThreadId, [
               {
                 kind: "item.outputDelta",
                 key: itemKey(callId, "tool"),
@@ -701,7 +783,7 @@ export class OpenCodeEventRouter {
     changes: RecordValue[],
   ) {
     const item = { type: "fileChange", changes };
-    this.emitTimeline(session.bbThreadId, [
+    this.emit(session.bbThreadId, [
       {
         kind: "item.open",
         key: itemKey(key, "fileChange"),
@@ -727,7 +809,7 @@ export class OpenCodeEventRouter {
     if (!active) return;
     active.abortController.abort();
     if (active.manualCompaction) {
-      this.emitTimeline(
+      this.emit(
         session.bbThreadId,
         manualCompactionOutcomeDeltas({
           providerTurnId: active.providerTurnId,
@@ -739,6 +821,8 @@ export class OpenCodeEventRouter {
       session.active = undefined;
       return;
     }
+    for (const [childId, child] of this.childSessions)
+      if (child.parent === session) this.childSessions.delete(childId);
     for (const poll of active.shellPolls?.values() ?? []) poll.stopped = true;
     active.shellPolls?.clear();
     dynamicToolCallRouter.resolve(
@@ -748,7 +832,7 @@ export class OpenCodeEventRouter {
     for (const [, formId] of active.openQuestions)
       void this.interactions.cancelQuestionForm(session, formId);
     for (const [id, item] of active.opened) {
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "item.close",
           key: itemKeyForOpenItem(id, item),
@@ -758,6 +842,7 @@ export class OpenCodeEventRouter {
         },
       ]);
     }
+    for (const id of active.opened.keys()) this.parentRefs.delete(id);
     active.opened.clear();
     active.openQuestions.clear();
     active.settledTools.clear();
@@ -765,7 +850,7 @@ export class OpenCodeEventRouter {
     active.pendingInput.clear();
     active.touchedFiles.clear();
     if (status === "failed") {
-      this.emitTimeline(
+      this.emit(
         session.bbThreadId,
         providerFailureDeltas({
           providerTurnId: active.providerTurnId,
@@ -776,7 +861,7 @@ export class OpenCodeEventRouter {
         }),
       );
     } else {
-      this.emitTimeline(session.bbThreadId, [
+      this.emit(session.bbThreadId, [
         {
           kind: "turn.boundary",
           status,

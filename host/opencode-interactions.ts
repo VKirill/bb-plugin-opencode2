@@ -26,7 +26,10 @@ type RequestOpenCode = (
 ) => Promise<RecordValue>;
 
 export class OpenCodeInteractions {
-  constructor(private readonly request: RequestOpenCode) {}
+  constructor(
+    private readonly request: RequestOpenCode,
+    private readonly emitTimeline: typeof emit = emit,
+  ) {}
 
   async handlePermission(session: SessionState, data: RecordValue) {
     const active = session.active;
@@ -153,7 +156,7 @@ export class OpenCodeInteractions {
     active.opened.delete(callId);
     active.openQuestions.delete(callId);
     active.settledTools.add(callId);
-    emit(session.bbThreadId, [
+    this.emitTimeline(session.bbThreadId, [
       {
         kind: "item.close",
         key: itemKey(callId, "tool"),
