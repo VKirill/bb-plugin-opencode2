@@ -1,24 +1,26 @@
-# OpenCode v2 provider for BB
+# OpenCode v2 for BB
 
-This plugin lets BB run threads through an installed OpenCode v2 service.
-OpenCode owns the model connection, model credentials, and its own tool
-execution. The plugin translates between OpenCode's v2 API and events and
-BB's provider bridge protocol.
+A [BB](https://getbb.app) plugin that runs BB threads through an installed
+[OpenCode v2](https://opencode.ai/v2/docs/) server. OpenCode owns the model
+connection, model credentials, and its own tool execution. The plugin translates
+between OpenCode's v2 API and events and BB's provider bridge protocol.
 
 Verified against OpenCode 2.0.26–2.0.27 and BB 0.46 (Plugin SDK 0.6.37).
 
-## What you need
+## Requirements
 
-- BB 0.46 or newer
-- OpenCode v2 2.0.26 or newer (`opencode2` on the host's PATH). BB can
+- BB 0.41 or newer (developed and verified on 0.46)
+- OpenCode v2 2.0.26 or newer (`opencode2` on the host's `PATH`). BB can
   install it (`npm install -g @opencode/cli`) or update it
   (`opencode2 upgrade`) from the provider settings.
 - At least one model provider connected in OpenCode: `opencode2 auth login`
 
-Install this plugin from the repository root:
+## Install
+
+From the BB plugin store, or from the command line:
 
 ```sh
-bb plugin install .
+bb plugin install git:https://github.com/iamEvanYT/bb-plugin-opencode2.git
 ```
 
 BB shows OpenCode v2 in the provider picker when `opencode2` is installed and
@@ -92,59 +94,23 @@ Settings apply from the next turn. See
 [`skills/opencode2-provider/SKILL.md`](skills/opencode2-provider/SKILL.md) for
 the CLI equivalents and troubleshooting.
 
-## How the bridge works
-
-The plugin connects to OpenCode's single shared background service only when
-a thread needs it, and never stops it. Sharing the service matters because
-OpenCode stores session state there, and BB may resume a thread from another
-host worker.
-
-For BB dynamic tools, the plugin starts a local, session-specific MCP
-process. OpenCode sees the configured tools, while the plugin checks the
-calling session and a random token before forwarding each call to BB. An
-unchanged tool catalog keeps the live MCP child across BB's repeated session
-setup. Discarding the thread removes its OpenCode MCP registration; a
-persisted registry lets discards clean up even when another host worker owns
-the thread.
-
-OpenCode shells run under the background service, whose environment is fixed
-at service start. The plugin sends each session a credential-filtered host
-environment, BB's per-session `envVars`, and `PATH` with the `bb` binary
-directory first.
-
-## Code layout
-
-`host.ts` exposes the host contract and public test helpers. The host
-implementation lives under `host/`:
-
-- `provider-bridge.ts` validates and dispatches provider protocol requests.
-- `opencode-server.ts` owns the service connection, HTTP client, model
-  catalog, persistence, event stream, and turn reconciliation.
-- `opencode-event-router.ts` translates OpenCode events into BB deltas,
-  including live shell output and subagent nesting.
-- `session-manager.ts` owns session setup, per-turn preparation (settings,
-  permissions, plan mode, model), MCP registration, and shutdown.
-- `maintenance.ts` implements health, install, and update.
-- `opencode-requests.ts`, `timeline.ts`, `tool-mapping.ts`, `prompt.ts`, and
-  `models.ts` contain the testable protocol mappings.
-
-The settings UI follows the same pattern: `app.tsx` registers the slot and
-`app/settings-section.tsx` implements it. `plan.md` tracks remaining work.
-
 ## Development
 
 ```sh
+npm install
 bb plugin types
 npm run check
 ```
 
-`npm run check` verifies formatting, typechecks every source and test file,
-builds all plugin artifacts, runs the Node test suite against the built host
-artifact, and mounts the settings UI in jsdom. `opencode-v2-contract.test.ts`
-pins the request and event shapes verified against a live OpenCode 2.0.27
-service.
+`npm run check` verifies formatting, typechecks sources and tests, builds all
+plugin artifacts, runs the Node test suite against the built host artifact, and
+mounts the settings UI in jsdom. To try a local checkout in BB, run
+`bb plugin install .` from the repository root.
 
-## OpenCode documentation
+See [docs/architecture.md](docs/architecture.md) for the code layout and design
+decisions, and [docs/opencode-v2-api.md](docs/opencode-v2-api.md) for the
+OpenCode routes and events the bridge depends on.
 
-- <https://opencode.ai/v2/docs/>
-- <https://opencode.ai/v2/docs/api>
+## License
+
+[MIT](LICENSE)
