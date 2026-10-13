@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 
 test("uses only public SDK and package-local imports", () => {
-  const packageRoot = fileURLToPath(new URL(".", import.meta.url));
+  const packageRoot = fileURLToPath(new URL("..", import.meta.url));
   const scan = experimental_scanPublicSdkOnly(packageRoot, {
     allow: [
       /^react$/,

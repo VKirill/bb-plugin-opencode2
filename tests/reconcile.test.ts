@@ -2,7 +2,7 @@
 // disconnected must be settled from the session's recorded outcome.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OpenCodeServer, sessions } from "./test-host-api.js";
+import { OpenCodeServer, sessions } from "./support/host-api.js";
 
 function fakeSession(id: string, startedAt: number) {
   return {

@@ -17,7 +17,7 @@ import {
   sessionFromParams,
   sessionInstructionsRequest,
   startDynamicToolsMcpProxy,
-} from "./test-host-api.js";
+} from "./support/host-api.js";
 
 const TOOLS = [
   {
@@ -348,7 +348,7 @@ test("the stdio MCP child round trips a tool call through the loopback bridge", 
     serverName: "bb_opencode2_test",
     sessionId: "oc_session_1",
     tools: TOOLS.slice(0, 1),
-    entryPath: fileURLToPath(new URL("./dist/host.js", import.meta.url)),
+    entryPath: fileURLToPath(new URL("../dist/host.js", import.meta.url)),
     callTool: async (call: Record<string, unknown>) => {
       calls.push(call);
       return { content: "Rain, 8C" };
@@ -363,7 +363,7 @@ test("the stdio MCP child round trips a tool call through the loopback bridge", 
   const child = spawn(
     process.execPath,
     [
-      fileURLToPath(new URL("./dist/host.js", import.meta.url)),
+      fileURLToPath(new URL("../dist/host.js", import.meta.url)),
       DYNAMIC_TOOLS_MCP_ARG,
     ],
     {

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { OpenCodeServer } from "./test-host-api.js";
+import { OpenCodeServer } from "./support/host-api.js";
 
 test("follows checkpoint cursors even when a page is shorter than the requested limit", async () => {
   const paths: string[] = [];

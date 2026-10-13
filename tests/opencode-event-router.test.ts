@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OpenCodeEventRouter } from "./test-host-api.js";
-import type { OpenCodeRecord, SessionState } from "./host/types.ts";
+import { OpenCodeEventRouter } from "./support/host-api.js";
+import type { OpenCodeRecord, SessionState } from "../src/host/types.ts";
 
 test("translates current OpenCode v2 text, reasoning, tool, and terminal events", async () => {
   const emitted: OpenCodeRecord[] = [];

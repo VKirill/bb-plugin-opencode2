@@ -1,6 +1,25 @@
 {
   "name": "bb-plugin-opencode2",
   "version": "0.1.0",
+  "description": "BB plugin that runs threads through an installed OpenCode v2 server.",
+  "keywords": [
+    "bb-plugin",
+    "opencode",
+    "provider"
+  ],
+  "homepage": "https://github.com/iamEvanYT/bb-plugin-opencode2#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamEvanYT/bb-plugin-opencode2.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iamEvanYT/bb-plugin-opencode2/issues"
+  },
+  "author": {
+    "name": "Evan",
+    "url": "https://github.com/iamEvanYT"
+  },
+  "license": "MIT",
   "type": "module",
   "engines": {
     "bb": ">=0.41",
@@ -11,7 +30,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test --test-concurrency=1 *.test.ts && vitest run app.test.tsx",
+    "test": "npm run build && node --test --test-concurrency=1 tests/*.test.ts && vitest run tests/app.test.tsx",
     "check": "npm run format:check && npm run typecheck && npm test"
   },
   "bb": {
@@ -20,9 +39,9 @@
     "branding": {
       "icon": "./icons/opencode.svg"
     },
-    "server": "./server.ts",
-    "host": "./host.ts",
-    "app": "./app.tsx"
+    "server": "./src/server.ts",
+    "host": "./src/host.ts",
+    "app": "./src/app.tsx"
   },
   "dependencies": {
     "@get-bb/plugin-sdk": "0.6.37",
@@ -58,6 +77,5 @@
     "typescript": "^5.7.0",
     "vaul": "^1.1.2",
     "vitest": "^3.2.7"
-  },
-  "license": "MIT"
+  }
 }

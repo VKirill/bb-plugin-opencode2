@@ -20,7 +20,7 @@ import {
   toolFailureError,
   toolRow,
   touchedPaths,
-} from "./test-host-api.js";
+} from "./support/host-api.js";
 
 test("bounds multi-megabyte tool input and output before serializing a BB timeline delta", () => {
   const huge = `start-${"x".repeat(4 * 1024 * 1024)}-end`;

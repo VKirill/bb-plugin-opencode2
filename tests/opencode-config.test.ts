@@ -15,7 +15,7 @@ import {
   addBbToolsRule,
   removeBbToolsRule,
   syncBbToolsRule,
-} from "./test-host-api.js";
+} from "./support/host-api.js";
 
 const RULE =
   '{ "action": "bb_opencode2_*", "resource": "*", "effect": "deny" }';

@@ -9,13 +9,20 @@
     "lib": ["ES2022", "DOM"],
     "types": ["node"],
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./src/*"]
     },
     "noEmit": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "skipLibCheck": false
   },
-  "include": ["**/*.ts", "**/*.tsx"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "tests/support/*.js",
+    "vitest.config.ts"
+  ],
   "exclude": ["dist", "node_modules"]
 }

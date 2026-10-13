@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import plugin from "./server.ts";
+import plugin from "../src/server.ts";
 
 test("registers OpenCode v2 as an installed checkpoint-capable provider with every BB permission mode", async () => {
   const { bb, harness } = createFakePluginHost({

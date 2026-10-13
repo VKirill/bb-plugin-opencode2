@@ -16,7 +16,7 @@ import {
   sessionRenameRequest,
   shellExitCode,
   workspacePath,
-} from "./test-host-api.js";
+} from "./support/host-api.js";
 
 test("accept-edits asks for everything except reads, searches, and edits", () => {
   const rules = sessionPermissionRules({

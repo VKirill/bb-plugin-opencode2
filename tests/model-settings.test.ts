@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   DEFAULT_MODEL_SETTINGS,
   normalizeModelSettings,
-} from "./model-settings.ts";
+} from "../src/model-settings.ts";
 
 test("normalizes legacy and malformed model settings", () => {
   assert.deepEqual(normalizeModelSettings(undefined), DEFAULT_MODEL_SETTINGS);
