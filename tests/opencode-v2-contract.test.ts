@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   dynamicToolRow,
   forkBoundaryRetainingThrough,
+  agentSessionOption,
   mapModel,
   metadataFileChanges,
   modelCatalogEntry,
@@ -332,4 +333,50 @@ test("forwards native OpenCode skill mentions, not only BB-configured ones", () 
   assert.deepEqual(body.skills, [
     { id: "unslop", mention: { start: 0, end: 7, text: "/unslop" } },
   ]);
+});
+
+test("offers an agent session option only when a custom primary agent exists", () => {
+  assert.equal(
+    agentSessionOption([{ id: "build" }, { id: "plan" }]),
+    undefined,
+  );
+  assert.deepEqual(
+    agentSessionOption([
+      { id: "build" },
+      { id: "plan" },
+      { id: "reviewer", description: "Reviews code" },
+    ]),
+    {
+      type: "select",
+      id: "agent",
+      label: "Agent",
+      description: "OpenCode primary agent",
+      value: "build",
+      values: [
+        { id: "build", label: "build" },
+        { id: "plan", label: "plan" },
+        { id: "reviewer", label: "reviewer", description: "Reviews code" },
+      ],
+    },
+  );
+  assert.equal(
+    agentSessionOption([{ id: "build" }, { id: "reviewer" }], "reviewer")
+      ?.value,
+    "reviewer",
+  );
+  // A choice that is no longer offered falls back to the default.
+  assert.equal(
+    agentSessionOption([{ id: "build" }, { id: "reviewer" }], "gone")?.value,
+    "build",
+  );
+  const option = agentSessionOption([{ id: "build" }, { id: "reviewer" }]);
+  assert.ok(option);
+  assert.deepEqual(
+    mapModel({ providerID: "p", id: "m" }, true, [option]).sessionOptions,
+    [option],
+  );
+  assert.equal(
+    "sessionOptions" in mapModel({ providerID: "p", id: "m" }, true),
+    false,
+  );
 });

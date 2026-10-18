@@ -51,7 +51,13 @@ Settings apply from the next turn.
   shell, web, and other non-edit tools; `full` allows everything. A denial is
   returned to the agent as feedback, and the turn continues.
 - `/plan` runs the turn on OpenCode's read-only `plan` agent; the next normal
-  turn switches back to `build`.
+  turn switches back to the agent picked in the composer, or `build`.
+- Primary agents are a BB session option named `agent`, listed per model when
+  OpenCode has a primary agent besides `build` and `plan` (read from the
+  thread's workspace, so project-level agents count). Choose it in the
+  composer, with `bb thread spawn --option agent=<name>`, or on an existing
+  thread with `bb thread options --set agent=<name>`; it applies on the next
+  turn. `/plan` still overrides it for that turn.
 - Reasoning levels map to the model's OpenCode variants. Models without
   variants run on their defaults whatever level is picked.
 - Not supported: thread archive, goals, service tiers, the usage dashboard,

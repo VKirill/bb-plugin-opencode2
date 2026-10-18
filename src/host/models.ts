@@ -1,3 +1,4 @@
+import { AGENT_OPTION_ID, DEFAULT_AGENT } from "../settings-contract.ts";
 import {
   inputRecord,
   stringValue,
@@ -174,7 +175,46 @@ export function resolveModelVariant(
   };
 }
 
-export function mapModel(model: RecordValue, isDefault: boolean) {
+/**
+ * BB's native per-model session option for choosing OpenCode's primary agent.
+ * OpenCode always has `build` and `plan`, which BB's plan mode already covers,
+ * so the option only exists once there is another primary agent.
+ */
+export function agentSessionOption(
+  agents: readonly { id: string; description?: string }[],
+  current?: string,
+) {
+  if (
+    !agents.some((agent) => agent.id !== DEFAULT_AGENT && agent.id !== "plan")
+  )
+    return undefined;
+  const ids = agents.map((agent) => agent.id);
+  return {
+    type: "select" as const,
+    id: AGENT_OPTION_ID,
+    label: "Agent",
+    description: "OpenCode primary agent",
+    value:
+      current !== undefined && ids.includes(current)
+        ? current
+        : ids.includes(DEFAULT_AGENT)
+          ? DEFAULT_AGENT
+          : ids[0],
+    values: agents.map((agent) => ({
+      id: agent.id,
+      label: agent.id,
+      ...(agent.description ? { description: agent.description } : {}),
+    })),
+  };
+}
+
+export function mapModel(
+  model: RecordValue,
+  isDefault: boolean,
+  sessionOptions: readonly NonNullable<
+    ReturnType<typeof agentSessionOption>
+  >[] = [],
+) {
   const entry = modelCatalogEntry(model);
   const providerId = stringValue(model.providerID) ?? "unknown";
   const levels = [...entry.variants.keys()].map((level) => ({
@@ -194,6 +234,7 @@ export function mapModel(model: RecordValue, isDefault: boolean) {
       ? levels
       : [{ reasoningEffort: "medium", description: "Default" }],
     defaultReasoningEffort: (medium ?? levels[0])?.reasoningEffort ?? "medium",
+    ...(sessionOptions.length > 0 ? { sessionOptions } : {}),
     isDefault,
   };
 }

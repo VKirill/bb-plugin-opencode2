@@ -537,6 +537,27 @@ export class OpenCodeServer {
     }
   }
 
+  /**
+   * Agents a user can pick as a session's primary agent: OpenCode's `primary`
+   * and `all` modes, minus hidden ones. Subagent-only agents are reached
+   * through delegation instead.
+   */
+  async primaryAgents(
+    cwd: string,
+  ): Promise<{ id: string; description?: string }[]> {
+    const result = await this.request(`/api/agent?${locationQuery(cwd)}`);
+    return (Array.isArray(result.data) ? result.data : []).flatMap(
+      (value: unknown) => {
+        const agent = inputRecord(value);
+        const id = stringValue(agent.id ?? agent.name);
+        if (!id || agent.hidden === true || agent.mode === "subagent")
+          return [];
+        const description = stringValue(agent.description);
+        return [{ id, ...(description ? { description } : {}) }];
+      },
+    );
+  }
+
   /** Skills OpenCode discovered for a workspace: ID and SKILL.md path. */
   async nativeSkills(cwd: string): Promise<{ id: string; path?: string }[]> {
     const result = await this.request(`/api/skill?${locationQuery(cwd)}`);

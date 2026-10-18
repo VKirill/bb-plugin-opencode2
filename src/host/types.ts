@@ -71,6 +71,12 @@ export type SessionState = {
   contextWindow?: number | null;
   /** OpenCode agent BB last selected; `plan` while BB plan mode is on. */
   agent?: string;
+  /** The agent chosen through BB's `agent` session option, kept across turns. */
+  agentChoice?: string;
+  /** The choice came from the plugin's composer pick, not BB's session option. */
+  agentSeeded?: boolean;
+  /** Last session-options state published to BB, to skip repeats. */
+  publishedAgentOptions?: string;
   usage: {
     input: number;
     output: number;

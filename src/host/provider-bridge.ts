@@ -38,6 +38,7 @@ import {
 } from "./dynamic-tools-mcp.ts";
 import {
   assertModelEnabled,
+  agentSessionOption,
   mapModel,
   modelRefFromOptions,
   sameModelRef,
@@ -57,6 +58,7 @@ import { promptBody } from "./prompt.ts";
 import {
   ensureSessionModel,
   prepareTurn,
+  publishAgentOption,
   registerSession,
   releaseDynamicTools,
   sessionFromParams,
@@ -215,9 +217,17 @@ async function handle(request: RecordValue) {
       )
         ? catalog.defaultId
         : models[0] && `${models[0].providerID}/${models[0].id}`;
+      // Agents come from this workspace, so project-level agents show up.
+      const agentOption = agentSessionOption(
+        await openCodeServer.primaryAgents(cwd).catch(() => []),
+      );
       sendResult(request.id, {
         models: models.map((model) =>
-          mapModel(model, `${model.providerID}/${model.id}` === defaultId),
+          mapModel(
+            model,
+            `${model.providerID}/${model.id}` === defaultId,
+            agentOption ? [agentOption] : [],
+          ),
         ),
         selectedOnlyModels: [],
       });
@@ -261,6 +271,8 @@ async function handle(request: RecordValue) {
       });
       emit(params.threadId, [{ kind: "session.reset" }]);
       sendResult(request.id, { providerThreadId, sessionRestorable: true });
+      const started = sessions.get(String(params.threadId));
+      if (started) void publishAgentOption(started);
       return;
     }
     case "thread/resume": {
@@ -284,6 +296,8 @@ async function handle(request: RecordValue) {
         providerThreadId: params.providerThreadId,
         sessionRestorable: true,
       });
+      const resumed = sessions.get(String(params.threadId));
+      if (resumed) void publishAgentOption(resumed);
       return;
     }
     case "thread/fork": {

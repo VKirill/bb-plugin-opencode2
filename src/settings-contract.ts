@@ -1,6 +1,11 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
+/** The BB session option through which OpenCode's primary agent is chosen. */
+export const AGENT_OPTION_ID = "agent";
+/** OpenCode's default primary agent. */
+export const DEFAULT_AGENT = "build";
+
 export const modelSummarySchema = z
   .object({
     id: z.string().min(1),
@@ -80,6 +85,20 @@ export const opencodeSettingsRpcContract = defineRpcContract({
     output: z
       .object({ models: z.array(modelSummarySchema).max(10_000) })
       .strict(),
+  },
+  // The agent picked in a new-thread composer, held until its thread exists.
+  getNewThreadAgent: {
+    input: z.object({ projectId: z.string().min(1) }).strict(),
+    output: z.object({ agent: z.string().min(1).nullable() }).strict(),
+  },
+  setNewThreadAgent: {
+    input: z
+      .object({
+        projectId: z.string().min(1),
+        agent: z.string().min(1).nullable(),
+      })
+      .strict(),
+    output: z.object({ agent: z.string().min(1).nullable() }).strict(),
   },
   saveSettings: {
     input: modelSettingsSchema,

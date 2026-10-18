@@ -27,6 +27,7 @@ export {
   startDynamicToolsMcpProxy,
 } from "./host/dynamic-tools-mcp.ts";
 export {
+  agentSessionOption,
   assertModelEnabled,
   mapModel,
   modelCatalogEntry,
