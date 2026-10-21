@@ -227,6 +227,7 @@ async function handle(request: RecordValue) {
             model,
             `${model.providerID}/${model.id}` === defaultId,
             agentOption ? [agentOption] : [],
+            catalog.providerNames.get(String(model.providerID)),
           ),
         ),
         selectedOnlyModels: [],
