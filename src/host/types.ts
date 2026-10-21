@@ -1,5 +1,6 @@
 import type { DynamicTool } from "@get-bb/plugin-sdk/provider-bridge";
 import type { DynamicToolsMcpProxy } from "./dynamic-tools-mcp.ts";
+import type { VkSessionPolicy } from "./vk-session-policy.ts";
 
 /**
  * OpenCode's beta API does not publish a complete event schema. Keep its
@@ -57,6 +58,8 @@ export type SessionState = {
   /** Serialized ruleset last sent to OpenCode, to skip redundant PATCHes. */
   appliedPermissions?: string;
   disableSubagents: boolean;
+  /** Required session policy from core; null or absent when there is none. */
+  vkPolicy?: VkSessionPolicy | null;
   nativeSkillNames?: Set<string>;
   dynamicTools: DynamicTool[];
   disallowedTools: Set<string>;

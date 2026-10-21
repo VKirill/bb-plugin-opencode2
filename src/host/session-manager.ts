@@ -27,6 +27,11 @@ import {
   sessionPermissionsRequest,
 } from "./opencode-requests.ts";
 import { openCodeServer } from "./opencode-server.ts";
+import {
+  readVkSessionPolicy,
+  vkPolicyNeeds,
+  vkPolicyRules,
+} from "./vk-session-policy.ts";
 import { enabledDynamicTools, sameDynamicTools } from "./prompt.ts";
 import {
   errorMessage,
@@ -85,6 +90,7 @@ export function sessionFromParams(
     providerThreadId,
     cwd: String(params.cwd),
     permissionMode: parsePermissionMode(options.permissionMode),
+    ...vkPolicyAtStart(options),
     // Preserve the existing policy backstop when a caller explicitly blocks
     // OpenCode's native subagent tools as well as when the plugin setting does.
     disableSubagents:
@@ -103,6 +109,11 @@ export function sessionFromParams(
     ...agentChoiceAtStart(options),
     usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
   };
+}
+
+function vkPolicyAtStart(options: RecordValue) {
+  const vkPolicy = readVkSessionPolicy(options.providerOptions);
+  return vkPolicy ? { vkPolicy } : {};
 }
 
 function agentChoiceAtStart(options: RecordValue) {
@@ -208,6 +219,27 @@ async function installSessionInstructions(session: SessionState) {
 }
 
 /**
+ * The deny rules of the session's required policy, built against what
+ * OpenCode has for this location right now. Empty when there is no policy, so
+ * the default ruleset is untouched. Lists are read on every call because a
+ * skill or MCP server can appear between turns; an unchanged result is not
+ * re-sent (see the ruleset key in ensureSessionPermissions).
+ */
+async function vkSessionPolicyRules(session: SessionState) {
+  const policy = session.vkPolicy;
+  if (!policy) return [];
+  const needs = vkPolicyNeeds(policy);
+  const [skills, mcpServers] = await Promise.all([
+    needs.skillList ? openCodeServer.nativeSkillNames(session.cwd) : undefined,
+    needs.mcpList ? openCodeServer.mcpServerNames(session.cwd) : undefined,
+  ]);
+  return vkPolicyRules(policy, {
+    ...(skills ? { skills: [...skills] } : {}),
+    ...(mcpServers ? { mcpServers } : {}),
+  });
+}
+
+/**
  * Keep OpenCode's session ruleset in step with BB's permission mode. BB can
  * change the mode per turn, so callers pass the turn's mode; an unchanged
  * ruleset is not re-sent.
@@ -216,7 +248,9 @@ export async function ensureSessionPermissions(
   session: SessionState,
   permissionMode = session.permissionMode,
 ) {
+  const policyRules = await vkSessionPolicyRules(session);
   const rules = sessionPermissionRules({
+    ...(policyRules.length > 0 ? { policyRules } : {}),
     permissionMode,
     disableSubagents: session.disableSubagents,
     dynamicToolServer: dynamicMcpServerName(session.providerThreadId),
@@ -469,6 +503,10 @@ export async function prepareTurn(session: SessionState, options: unknown) {
     settings.disableSubagents !== false ||
     session.disallowedTools.has("task") ||
     session.disallowedTools.has("subagent");
+  // Core sends the policy with every turn; a turn without provider options
+  // keeps what the session had.
+  if (opts.providerOptions && typeof opts.providerOptions === "object")
+    session.vkPolicy = readVkSessionPolicy(opts.providerOptions);
   session.enabledModels =
     settings.enabledModels === null ? null : new Set(settings.enabledModels);
   await ensureSessionPermissions(

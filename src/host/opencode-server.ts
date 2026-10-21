@@ -690,6 +690,21 @@ export class OpenCodeServer {
     }
   }
 
+  /** Names of the MCP servers OpenCode knows for a location; undefined when it cannot say. */
+  async mcpServerNames(cwd: string) {
+    try {
+      const result = await this.request(`/api/mcp?${locationQuery(cwd)}`);
+      if (!Array.isArray(result.data)) return undefined;
+      return result.data
+        .map((value: unknown) => stringValue(inputRecord(value).name))
+        .filter(
+          (name: string | undefined): name is string => name !== undefined,
+        );
+    } catch {
+      return undefined;
+    }
+  }
+
   async listSessionMessageIds(sessionId: string): Promise<CheckpointMessage[]> {
     const messages: CheckpointMessage[] = [];
     let cursor: string | undefined;

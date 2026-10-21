@@ -63,6 +63,21 @@ Inside `src/host/`:
   wins). `auto` keeps OpenCode's agent rules and answers remaining asks with
   `once`; `full` adds `*` → allow so nothing prompts. A denial is sent as a
   reject with a message, so the agent continues instead of the turn aborting.
+- **A required session policy is enforced with session rules too.** Our BB
+  core fork (VK) hands the runtime policy to the bridge as the `vkSessionPolicy`
+  provider option (plus `vkRequiredSessionPolicy: 1`) on every start, resume and
+  turn, and the bridge declares `experimental_vkRequiredSessionPolicy: 1` in its
+  `initialize` capabilities. `src/host/vk-session-policy.ts` turns it into rules
+  appended after the permission-mode rules: `skill` deny `*` plus allow per
+  listed name (or deny per listed name), and a `<server>_*` deny for every
+  OpenCode MCP server (`GET /api/mcp`) the policy does not admit. A denied skill
+  disappears from the model's system prompt; a denied MCP server's tools vanish
+  from the Code Mode catalog and calls fail as unknown tools. This session's own
+  `bb_opencode2_*` server is never denied. A required policy that cannot be
+  built (for example the server list is unavailable) fails the turn instead of
+  running unrestricted. `nativePlugins` and `projectInstructions: false` cannot
+  be enforced per session in the shared service, so core refuses them. Without a
+  policy the ruleset is byte-identical to before.
 - **BB tools are allowed by exact `<server>_<tool>` action name.** OpenCode
   shares MCP servers per directory, not per session, so each session allows only
   its own tools and hides the others.

@@ -162,6 +162,9 @@ async function handle(request: RecordValue) {
         ok: true,
         protocolVersion: 2,
         capabilities: {
+          // VK core fork: this bridge enforces a required session policy
+          // (skills, MCP servers) through OpenCode session permission rules.
+          experimental_vkRequiredSessionPolicy: 1,
           sessionRestore: true,
           threadArchive: false,
           threadRename: true,

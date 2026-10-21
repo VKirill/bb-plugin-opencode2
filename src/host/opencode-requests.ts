@@ -98,12 +98,15 @@ const ACCEPT_EDITS_ALLOWED_ACTIONS = [
  *   always allowed instead of prompting twice.
  * - Disabled native subagents are denied outright, which OpenCode reports to
  *   the model as a tool error instead of interrupting the turn.
+ * - A required session policy adds its skill and MCP deny rules last.
  */
 export function sessionPermissionRules(input: {
   permissionMode?: string;
   disableSubagents: boolean;
   dynamicToolServer?: string;
   dynamicToolNames?: readonly string[];
+  /** Required-session-policy rules; they go last so they override the mode. */
+  policyRules?: readonly PermissionRule[];
 }): PermissionRule[] {
   const rules: PermissionRule[] = [];
   if (input.permissionMode === "accept-edits") {
@@ -140,6 +143,17 @@ export function sessionPermissionRules(input: {
       { action: "subagent", resource: "*", effect: "deny" },
       { action: "task", resource: "*", effect: "deny" },
     );
+  if (input.policyRules?.length) {
+    rules.push(...input.policyRules);
+    // A policy deny such as `bb_*` must not take this session's own BB tool
+    // server with it, so its allow is restated after the policy rules.
+    if (input.dynamicToolServer && input.dynamicToolNames?.length)
+      rules.push({
+        action: `${input.dynamicToolServer}_*`,
+        resource: "*",
+        effect: "allow",
+      });
+  }
   return rules;
 }
 

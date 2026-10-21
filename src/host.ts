@@ -79,7 +79,15 @@ export {
   syncBbToolsRule,
 } from "./host/opencode-config.ts";
 export { experimental_providerBridge } from "./host/provider-bridge.ts";
-export { sessionFromParams } from "./host/session-manager.ts";
+export {
+  ensureSessionPermissions,
+  prepareTurn,
+  sessionFromParams,
+} from "./host/session-manager.ts";
+export {
+  readVkSessionPolicy,
+  vkPolicyRules,
+} from "./host/vk-session-policy.ts";
 export { sessions } from "./host/types.ts";
 export {
   boundedTimelineDelta,
