@@ -50,6 +50,8 @@ export type OpenCodeModelCatalog = {
   models: RecordValue[];
   defaultId?: string;
   entries: Map<string, ModelCatalogEntry>;
+  /** Provider display names by provider ID, e.g. `zai-coding-plan` -> `Z.AI Coding Plan`. */
+  providerNames: Map<string, string>;
 };
 
 export type McpBridgeRegistration = { serverName: string; cwd: string };
@@ -500,6 +502,18 @@ export class OpenCodeServer {
         () => ({}),
       );
       const defaultModel = inputRecord(inputRecord(fallback).data);
+      // Names are cosmetic, so a failed lookup only drops the provider prefix.
+      const providerList = await this.request(`/api/provider?${query}`).catch(
+        () => ({}),
+      );
+      const providerNames = new Map<string, string>();
+      const providerData = inputRecord(providerList).data;
+      for (const provider of Array.isArray(providerData) ? providerData : []) {
+        const record = inputRecord(provider);
+        const id = stringValue(record.id);
+        const name = stringValue(record.name);
+        if (id && name) providerNames.set(id, name);
+      }
       const defaultId =
         stringValue(defaultModel.providerID) && stringValue(defaultModel.id)
           ? `${defaultModel.providerID}/${defaultModel.id}`
@@ -507,6 +521,7 @@ export class OpenCodeServer {
       return {
         models,
         defaultId,
+        providerNames,
         entries: new Map(
           models.map((model) => {
             const entry = modelCatalogEntry(model);

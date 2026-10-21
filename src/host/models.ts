@@ -214,9 +214,11 @@ export function mapModel(
   sessionOptions: readonly NonNullable<
     ReturnType<typeof agentSessionOption>
   >[] = [],
+  providerName?: string,
 ) {
   const entry = modelCatalogEntry(model);
   const providerId = stringValue(model.providerID) ?? "unknown";
+  const modelName = stringValue(model.name) ?? entry.id;
   const levels = [...entry.variants.keys()].map((level) => ({
     reasoningEffort: level,
     description: entry.variants.get(level) ?? level,
@@ -225,7 +227,9 @@ export function mapModel(
   return {
     id: entry.id,
     model: entry.id,
-    displayName: stringValue(model.name) ?? entry.id,
+    // "Provider/Model", as OpenCode's ACP server names models, so models
+    // with the same name from different providers stay distinguishable.
+    displayName: providerName ? `${providerName}/${modelName}` : modelName,
     routeProviderId: providerId,
     description: `OpenCode provider ${providerId}`,
     // BB needs at least one level. A model without variants advertises one

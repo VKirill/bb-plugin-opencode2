@@ -158,6 +158,15 @@ test("never sends a variant the model does not have", () => {
   );
 });
 
+test("prefixes the model name with the provider name when known", () => {
+  const named = { providerID: "zai", id: "glm", name: "GLM-5" };
+  assert.equal(
+    mapModel(named, false, [], "Z.AI Coding Plan").displayName,
+    "Z.AI Coding Plan/GLM-5",
+  );
+  assert.equal(mapModel(named, false).displayName, "GLM-5");
+});
+
 test("defaults to medium effort and marks only the chosen default model", () => {
   const mapped = mapModel(model(["none", "low", "medium", "high"]), true);
   assert.equal(mapped.defaultReasoningEffort, "medium");
