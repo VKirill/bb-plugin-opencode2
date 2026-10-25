@@ -11,6 +11,8 @@ import {
   type ProviderInstallationRunResult,
   type ProviderInstallationStatus,
 } from "@get-bb/plugin-sdk/provider-bridge";
+import { realpath } from "node:fs/promises";
+import { sep } from "node:path";
 import type { ModelSettings } from "../settings-contract.ts";
 import { openCodeServer } from "./opencode-server.ts";
 import { errorMessage } from "./types.ts";
@@ -37,6 +39,59 @@ async function latestVersion(checkUpdates: boolean) {
   return value;
 }
 
+const NPM_PACKAGE_DIR = `${sep}lib${sep}node_modules${sep}${OPENCODE_NPM_PACKAGE.split("/").join(sep)}${sep}`;
+
+/**
+ * The npm prefix OpenCode was installed into, read from the real path of its
+ * executable (`<prefix>/lib/node_modules/@opencode/cli/...`), or null when it
+ * was not installed by npm.
+ */
+export function npmPrefixOf(realExecutablePath: string): string | null {
+  const at = realExecutablePath.lastIndexOf(NPM_PACKAGE_DIR);
+  return at > 0 ? realExecutablePath.slice(0, at) : null;
+}
+
+/**
+ * How to update the installed OpenCode. An npm install is updated in its own
+ * prefix: OpenCode v2 often lives in a separate prefix next to v1 (both ship an
+ * `opencode` binary), and `opencode2 upgrade` would install into npm's global
+ * prefix instead, leaving `opencode2` on the old version. Anything else uses
+ * `opencode2 upgrade`, which knows bun, brew and the curl installer.
+ */
+export function updateCommand(
+  executablePath: string | null,
+  realExecutablePath: string | null,
+): { command: string; args: string[]; displayCommand: string } {
+  const prefix =
+    realExecutablePath === null ? null : npmPrefixOf(realExecutablePath);
+  if (prefix !== null) {
+    const install = npmGlobalInstallCommand(OPENCODE_NPM_PACKAGE);
+    const args = [...install.args, "--prefix", prefix];
+    return {
+      command: install.command,
+      args,
+      displayCommand: `${install.displayCommand} --prefix ${shellQuote(prefix)}`,
+    };
+  }
+  return {
+    command: executablePath ?? OPENCODE_EXECUTABLE,
+    args: ["upgrade"],
+    displayCommand: `${OPENCODE_EXECUTABLE} upgrade`,
+  };
+}
+
+function shellQuote(value: string) {
+  return /^[A-Za-z0-9_./:@+-]+$/u.test(value)
+    ? value
+    : `'${value.replace(/'/gu, "'\\''")}'`;
+}
+
+async function realExecutable(executablePath: string | null) {
+  return executablePath === null
+    ? null
+    : await realpath(executablePath).catch(() => null);
+}
+
 export function isSupportedVersion(version: string) {
   return compareVersions(version, MIN_OPENCODE_VERSION) >= 0;
 }
@@ -54,6 +109,10 @@ export async function installationStatus(
     })),
   ]);
   const installed = currentVersion !== null;
+  const update = updateCommand(
+    executablePath,
+    await realExecutable(executablePath),
+  );
   const versionUnsupported =
     currentVersion !== null && !isSupportedVersion(currentVersion);
   const needsUpdate =
@@ -74,7 +133,7 @@ export async function installationStatus(
         ? {
             kind: "update",
             label: "Update",
-            command: `${OPENCODE_EXECUTABLE} upgrade`,
+            command: update.displayCommand,
           }
         : null,
     installSource: npmGlobalInstallSource({
@@ -93,8 +152,7 @@ export async function installationStatus(
 }
 
 /**
- * Install through npm; update through `opencode2 upgrade`, which knows how
- * OpenCode was installed (npm, bun, brew, or the curl installer).
+ * Install through npm; update in place (see `updateCommand`).
  */
 export async function installationRun(
   action: "install" | "update",
@@ -115,11 +173,10 @@ export async function installationRun(
   }
   return {
     available: true,
-    command: {
-      command: status.executablePath ?? OPENCODE_EXECUTABLE,
-      args: ["upgrade"],
-      displayCommand: `${OPENCODE_EXECUTABLE} upgrade`,
-    },
+    command: updateCommand(
+      status.executablePath,
+      await realExecutable(status.executablePath),
+    ),
     verification: installationVerification(status, "update"),
   };
 }

@@ -21,6 +21,7 @@ import { nativeSkillRoots } from "./host/opencode-requests.ts";
 import { sessions } from "./host/types.ts";
 
 export { createDynamicToolCallRouter } from "./host/bridge-runtime.ts";
+export { npmPrefixOf, updateCommand } from "./host/maintenance.ts";
 export {
   DYNAMIC_TOOLS_MCP_ARG,
   handleDynamicToolsMcpRequest,
