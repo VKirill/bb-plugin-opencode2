@@ -14,8 +14,12 @@ export function isFreeModel(modelId: string): boolean {
  * the mark says the same; the model ID keeps `free` searchable.
  */
 export function freeModelName(name: string): string {
-  const base = name.replace(/\s*(?:\(free\)|\bfree)\s*$/i, "").trim();
-  return `${FREE_MODEL_MARK} ${base || name}`;
+  return `${FREE_MODEL_MARK} ${withoutFreeSuffix(name)}`;
+}
+
+/** "North Mini Code (free)" → "North Mini Code". */
+export function withoutFreeSuffix(name: string): string {
+  return name.replace(/\s+(?:\(free\)|free)\s*$/i, "").trim() || name;
 }
 
 /** Free models first, then by ID. */

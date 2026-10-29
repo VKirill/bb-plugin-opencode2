@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { compareFreeFirst } from "../free-models.ts";
+import { compareSubgroups, modelSubgroups } from "./model-groups.ts";
 import type { ModelSettings } from "../settings-contract.ts";
 import {
   BRIDGE_JSON_RPC_ERRORS,
@@ -203,21 +204,25 @@ async function handle(request: RecordValue) {
         return;
       }
       const catalog = await openCodeServer.modelCatalog(cwd, true);
-      const models = catalog.models
-        .filter(
-          (model) =>
-            settings.enabledModels === null ||
-            settings.enabledModels.includes(`${model.providerID}/${model.id}`),
-        )
-        // Providers in ID order; free models lead their provider's list.
-        .sort(
-          (left, right) =>
-            String(left.providerID).localeCompare(String(right.providerID)) ||
-            compareFreeFirst(
-              `${left.providerID}/${left.id}`,
-              `${right.providerID}/${right.id}`,
-            ),
-        );
+      const enabled = catalog.models.filter(
+        (model) =>
+          settings.enabledModels === null ||
+          settings.enabledModels.includes(`${model.providerID}/${model.id}`),
+      );
+      const subgroups = modelSubgroups(enabled);
+      const subgroupOf = (model: RecordValue) =>
+        subgroups.get(`${model.providerID}/${model.id}`);
+      // Providers in ID order; inside one, free models first, then vendor
+      // subgroups in picker order.
+      const models = enabled.sort(
+        (left, right) =>
+          String(left.providerID).localeCompare(String(right.providerID)) ||
+          compareSubgroups(subgroupOf(left), subgroupOf(right)) ||
+          compareFreeFirst(
+            `${left.providerID}/${left.id}`,
+            `${right.providerID}/${right.id}`,
+          ),
+      );
       // Mark OpenCode's own default; fall back to the first listed model when
       // the default is unknown or blocked by the allowlist.
       const defaultId = models.some(
@@ -236,6 +241,7 @@ async function handle(request: RecordValue) {
             `${model.providerID}/${model.id}` === defaultId,
             agentOption ? [agentOption] : [],
             catalog.providerNames.get(String(model.providerID)),
+            subgroupOf(model),
           ),
         ),
         selectedOnlyModels: [],

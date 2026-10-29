@@ -82,6 +82,7 @@ export {
 } from "./host/opencode-config.ts";
 export { experimental_providerBridge } from "./host/provider-bridge.ts";
 export { compareFreeFirst, isFreeModel } from "./free-models.ts";
+export { modelSubgroups, vendorName } from "./host/model-groups.ts";
 export {
   ensureSessionPermissions,
   prepareTurn,

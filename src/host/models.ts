@@ -1,4 +1,8 @@
-import { freeModelName, isFreeModel } from "../free-models.ts";
+import {
+  freeModelName,
+  isFreeModel,
+  withoutFreeSuffix,
+} from "../free-models.ts";
 import { AGENT_OPTION_ID, DEFAULT_AGENT } from "../settings-contract.ts";
 import {
   inputRecord,
@@ -216,11 +220,12 @@ export function mapModel(
     ReturnType<typeof agentSessionOption>
   >[] = [],
   providerName?: string,
+  subgroup?: string,
 ) {
   const entry = modelCatalogEntry(model);
   const providerId = stringValue(model.providerID) ?? "unknown";
   const name = stringValue(model.name) ?? entry.id;
-  const modelName = isFreeModel(entry.id) ? freeModelName(name) : name;
+  const free = isFreeModel(entry.id);
   const levels = [...entry.variants.keys()].map((level) => ({
     reasoningEffort: level,
     description: entry.variants.get(level) ?? level,
@@ -231,7 +236,14 @@ export function mapModel(
     model: entry.id,
     // "Provider/Model", as OpenCode's ACP server names models, so models
     // with the same name from different providers stay distinguishable.
-    displayName: providerName ? `${providerName}/${modelName}` : modelName,
+    // An aggregator's models add a subgroup: "OpenRouter/Anthropic/Model".
+    displayName: subgroup
+      ? `${providerName ?? providerId}/${subgroup}/${free ? withoutFreeSuffix(name) : name}`
+      : providerName
+        ? `${providerName}/${free ? freeModelName(name) : name}`
+        : free
+          ? freeModelName(name)
+          : name,
     routeProviderId: providerId,
     description: `OpenCode provider ${providerId}`,
     // BB needs at least one level. A model without variants advertises one

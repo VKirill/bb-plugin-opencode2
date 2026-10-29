@@ -7,6 +7,8 @@ import {
   agentSessionOption,
   compareFreeFirst,
   isFreeModel,
+  modelSubgroups,
+  vendorName,
   mapModel,
   metadataFileChanges,
   modelCatalogEntry,
@@ -215,6 +217,47 @@ test("marks free models with a gift and lists them first", () => {
       "openrouter/~anthropic/claude-opus-latest",
       "openrouter/deepseek/deepseek-chat",
     ],
+  );
+});
+
+test("splits an aggregator into free and vendor subgroups", () => {
+  assert.equal(vendorName("~anthropic/claude-opus-latest"), "Anthropic");
+  assert.equal(vendorName("aion-labs/aion-2"), "Aion Labs");
+  assert.equal(vendorName("glm-5"), undefined);
+  const or = (id: string) => ({ providerID: "openrouter", id, name: id });
+  const groups = modelSubgroups([
+    or("google/gemma:free"),
+    or("cohere/north:free"),
+    or("anthropic/claude-opus"),
+    or("~anthropic/claude-latest"),
+    or("openai/gpt-5"),
+    { providerID: "zai", id: "glm-5", name: "GLM-5" },
+    { providerID: "zai", id: "glm-5-flash", name: "GLM-5 Flash" },
+  ]);
+  assert.deepEqual(Object.fromEntries(groups), {
+    "openrouter/google/gemma:free": "🎁 Бесплатные",
+    "openrouter/cohere/north:free": "🎁 Бесплатные",
+    "openrouter/anthropic/claude-opus": "Anthropic",
+    "openrouter/~anthropic/claude-latest": "Anthropic",
+  });
+  assert.equal(
+    mapModel(or("google/gemma:free"), false, [], "OpenRouter", "🎁 Бесплатные")
+      .displayName,
+    "OpenRouter/🎁 Бесплатные/google/gemma:free",
+  );
+  assert.equal(
+    mapModel(
+      {
+        providerID: "openrouter",
+        id: "cohere/north:free",
+        name: "North (free)",
+      },
+      false,
+      [],
+      "OpenRouter",
+      "🎁 Бесплатные",
+    ).displayName,
+    "OpenRouter/🎁 Бесплатные/North",
   );
 });
 
