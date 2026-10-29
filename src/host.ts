@@ -14,6 +14,7 @@ import {
   OPENCODE_LOGIN_COMMAND,
   providerHealth,
 } from "./host/maintenance.ts";
+import { freeModelName, isFreeModel } from "./free-models.ts";
 import { syncBbToolsRule } from "./host/opencode-config.ts";
 import { openCodeServer } from "./host/opencode-server.ts";
 import { shutdownBridge } from "./host/provider-bridge.ts";
@@ -80,6 +81,7 @@ export {
   syncBbToolsRule,
 } from "./host/opencode-config.ts";
 export { experimental_providerBridge } from "./host/provider-bridge.ts";
+export { compareFreeFirst, isFreeModel } from "./free-models.ts";
 export {
   ensureSessionPermissions,
   prepareTurn,
@@ -143,7 +145,12 @@ export default experimental_defineHostEntry({
           return modelSummarySchema.parse({
             id,
             providerId: model.providerID,
-            displayName: typeof model.name === "string" ? model.name : id,
+            displayName:
+              typeof model.name !== "string"
+                ? id
+                : isFreeModel(id)
+                  ? freeModelName(model.name)
+                  : model.name,
             ...(id === catalog.defaultId ? { isDefault: true } : {}),
           });
         }),

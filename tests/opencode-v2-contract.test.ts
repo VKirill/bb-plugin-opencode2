@@ -5,6 +5,8 @@ import {
   dynamicToolRow,
   forkBoundaryRetainingThrough,
   agentSessionOption,
+  compareFreeFirst,
+  isFreeModel,
   mapModel,
   metadataFileChanges,
   modelCatalogEntry,
@@ -165,6 +167,55 @@ test("prefixes the model name with the provider name when known", () => {
     "Z.AI Coding Plan/GLM-5",
   );
   assert.equal(mapModel(named, false).displayName, "GLM-5");
+});
+
+test("marks free models with a gift and lists them first", () => {
+  assert.equal(isFreeModel("openrouter/cohere/north-mini-code:free"), true);
+  assert.equal(isFreeModel("openrouter/openrouter/free"), true);
+  assert.equal(isFreeModel("opencode/beam-free"), true);
+  assert.equal(isFreeModel("openrouter/~anthropic/claude-opus-latest"), false);
+  assert.equal(isFreeModel("openai/freestyle"), false);
+  const free = {
+    providerID: "openrouter",
+    id: "cohere/north-mini-code:free",
+    name: "North Mini Code (free)",
+  };
+  assert.equal(
+    mapModel(free, false, [], "OpenRouter").displayName,
+    "OpenRouter/🎁 North Mini Code",
+  );
+  assert.equal(
+    mapModel(
+      { providerID: "opencode", id: "beam-free", name: "Beam Free" },
+      false,
+    ).displayName,
+    "🎁 Beam",
+  );
+  assert.equal(
+    mapModel(
+      {
+        providerID: "openrouter",
+        id: "openrouter/free",
+        name: "Free Models Router",
+      },
+      false,
+    ).displayName,
+    "🎁 Free Models Router",
+  );
+  assert.deepEqual(
+    [
+      "openrouter/~anthropic/claude-opus-latest",
+      "openrouter/google/gemma-4-31b-it:free",
+      "openrouter/deepseek/deepseek-chat",
+      "openrouter/cohere/north-mini-code:free",
+    ].sort(compareFreeFirst),
+    [
+      "openrouter/cohere/north-mini-code:free",
+      "openrouter/google/gemma-4-31b-it:free",
+      "openrouter/~anthropic/claude-opus-latest",
+      "openrouter/deepseek/deepseek-chat",
+    ],
+  );
 });
 
 test("defaults to medium effort and marks only the chosen default model", () => {

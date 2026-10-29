@@ -8,6 +8,7 @@ import {
   type OpenCodeStatus,
 } from "../settings-contract.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isFreeModel } from "../free-models.ts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -22,7 +23,11 @@ function groupByProvider(models: ModelSummary[]) {
   return [...map.entries()]
     .map(([providerId, items]) => ({
       providerId,
-      items: items.sort((a, b) => a.displayName.localeCompare(b.displayName)),
+      items: items.sort(
+        (a, b) =>
+          Number(isFreeModel(b.id)) - Number(isFreeModel(a.id)) ||
+          a.displayName.localeCompare(b.displayName),
+      ),
     }))
     .sort((a, b) => a.providerId.localeCompare(b.providerId));
 }

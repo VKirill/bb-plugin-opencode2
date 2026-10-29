@@ -1,3 +1,4 @@
+import { freeModelName, isFreeModel } from "../free-models.ts";
 import { AGENT_OPTION_ID, DEFAULT_AGENT } from "../settings-contract.ts";
 import {
   inputRecord,
@@ -218,7 +219,8 @@ export function mapModel(
 ) {
   const entry = modelCatalogEntry(model);
   const providerId = stringValue(model.providerID) ?? "unknown";
-  const modelName = stringValue(model.name) ?? entry.id;
+  const name = stringValue(model.name) ?? entry.id;
+  const modelName = isFreeModel(entry.id) ? freeModelName(name) : name;
   const levels = [...entry.variants.keys()].map((level) => ({
     reasoningEffort: level,
     description: entry.variants.get(level) ?? level,

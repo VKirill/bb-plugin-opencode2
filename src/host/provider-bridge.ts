@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { compareFreeFirst } from "../free-models.ts";
 import type { ModelSettings } from "../settings-contract.ts";
 import {
   BRIDGE_JSON_RPC_ERRORS,
@@ -208,10 +209,14 @@ async function handle(request: RecordValue) {
             settings.enabledModels === null ||
             settings.enabledModels.includes(`${model.providerID}/${model.id}`),
         )
-        .sort((left, right) =>
-          `${left.providerID}/${left.id}`.localeCompare(
-            `${right.providerID}/${right.id}`,
-          ),
+        // Providers in ID order; free models lead their provider's list.
+        .sort(
+          (left, right) =>
+            String(left.providerID).localeCompare(String(right.providerID)) ||
+            compareFreeFirst(
+              `${left.providerID}/${left.id}`,
+              `${right.providerID}/${right.id}`,
+            ),
         );
       // Mark OpenCode's own default; fall back to the first listed model when
       // the default is unknown or blocked by the allowlist.
